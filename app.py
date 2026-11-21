@@ -154,3 +154,34 @@ else:
 
 st.divider()
 st.markdown('**解读规则**：指数下跌 + 多只ETF份额同步增长 → 疑似逆势承接；指数上涨 + 多只ETF份额同步下降 → 疑似赎回。必须结合实际份额披露日期、净值与汇金定期持仓验证，不可认定为国家队买卖。')
+
+st.divider()
+st.subheader('自动采集数据（GitHub Actions）')
+st.caption('新增自动采集模块：每日尝试从交易所接口获取份额，写入GitHub仓库的 data/shares.csv；接口失败时保留旧数据。')
+try:
+    import requests
+    raw_url='https://raw.githubusercontent.com/zee8765/etf-monitor/main/data/shares.csv'
+    resp=requests.get(raw_url,timeout=8,headers={'Cache-Control':'no-cache'})
+    resp.raise_for_status()
+    from io import StringIO
+    auto=pd.read_csv(StringIO(resp.text),dtype={'code':str})
+    required={'date','code','shares_10k','source'}
+    if not required.issubset(auto.columns):
+        st.warning('自动采集文件格式不正确，尚不能计算份额变化。')
+    elif auto.empty:
+        st.info('自动采集尚未取得有效份额数据。请在GitHub Actions中检查运行日志；不显示虚构净申赎。')
+    else:
+        auto['date']=pd.to_datetime(auto['date'],errors='coerce')
+        auto['shares_10k']=pd.to_numeric(auto['shares_10k'],errors='coerce')
+        auto=auto[auto['code'].isin(ETFS)].dropna(subset=['date','shares_10k']).sort_values(['code','date'])
+        auto['变化（万份）']=auto.groupby('code')['shares_10k'].diff()
+        latest_auto=auto.groupby('code').tail(1).copy()
+        latest_auto['ETF']=latest_auto['code'].map(ETFS)
+        st.dataframe(latest_auto[['date','code','ETF','shares_10k','变化（万份）','source']],hide_index=True,use_container_width=True)
+        newest=auto['date'].max().date()
+        lag=(dt.date.today()-newest).days
+        if lag>5: st.warning(f'份额数据最新日期为 {newest}，已滞后 {lag} 天；请检查采集任务。')
+        st.caption('单位为万份。只有同一ETF连续有效观测的变化才可比较；跨日期缺口不等于单日净申赎。')
+        st.line_chart(auto.pivot_table(index='date',columns='code',values='shares_10k'))
+except Exception:
+    st.info('尚未找到自动采集文件，或GitHub暂不可访问。部署后请确认 data/shares.csv 已上传。')
