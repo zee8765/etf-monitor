@@ -1,4 +1,4 @@
-"""Four CSI 300 ETFs: exchange-published share monitoring dashboard."""
+"""CSI 300 ETF share monitor V2. Uses exchange share observations (10k shares)."""
 import datetime as dt
 from io import StringIO
 from pathlib import Path
@@ -7,169 +7,190 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-ETFS = {
-    '510300': '华泰柏瑞沪深300ETF',
-    '510330': '华夏沪深300ETF',
-    '510310': '易方达沪深300ETF',
-    '159919': '嘉实沪深300ETF',
-}
+ETFS = {'510300': '华泰柏瑞沪深300ETF', '510330': '华夏沪深300ETF',
+        '510310': '易方达沪深300ETF', '159919': '嘉实沪深300ETF'}
 LOCAL = Path(__file__).resolve().parent / 'data' / 'shares.csv'
 REMOTE = 'https://raw.githubusercontent.com/zee8765/etf-monitor/main/data/shares.csv'
-COLUMNS = ['date', 'code', 'shares_10k', 'source']
+COLS = {'date', 'code', 'shares_10k', 'source'}
+TODAY = pd.Timestamp.now(tz='Asia/Shanghai').tz_localize(None).normalize()
 
-st.set_page_config(page_title='沪深300 ETF份额监测', layout='wide')
-st.title('沪深300 ETF 份额监测中心')
-st.caption('跟踪四只沪深300ETF交易所披露的基金份额；不代表中央汇金账户流水或实时净申赎。')
+st.set_page_config(page_title='沪深300 ETF资金观察', layout='wide', initial_sidebar_state='collapsed')
+st.title('沪深300 ETF资金观察')
+st.caption('四只沪深300ETF · 交易所披露份额（万份） · 不代表中央汇金交易流水')
 
 @st.cache_data(ttl=300, show_spinner=False)
-def load_remote():
+def remote_csv():
     import requests
-    response = requests.get(REMOTE, timeout=12, headers={'Cache-Control': 'no-cache'})
-    response.raise_for_status()
-    return pd.read_csv(StringIO(response.text), dtype={'code': str})
+    r = requests.get(REMOTE, timeout=15, headers={'Cache-Control': 'no-cache'})
+    r.raise_for_status()
+    return pd.read_csv(StringIO(r.text), dtype={'code': str})
 
 @st.cache_data(ttl=300, show_spinner=False)
-def load_local():
+def local_csv():
     return pd.read_csv(LOCAL, dtype={'code': str})
 
 
-def clean(df):
-    if not set(COLUMNS).issubset(df.columns):
-        raise ValueError('CSV必须包含 date、code、shares_10k、source 四列')
-    x = df[COLUMNS].copy()
-    x['date'] = pd.to_datetime(x['date'], errors='coerce').dt.normalize()
-    x['code'] = x['code'].astype(str).str.strip().str.zfill(6)
-    x['shares_10k'] = pd.to_numeric(x['shares_10k'], errors='coerce')
-    x = x[x['code'].isin(ETFS) & x['date'].notna() & x['shares_10k'].gt(0)].copy()
-    x = x[x['date'] <= pd.Timestamp.now(tz='Asia/Shanghai').tz_localize(None).normalize()]
-    x = x.drop_duplicates(['date', 'code'], keep='last').sort_values(['code', 'date'])
-    return x.reset_index(drop=True)
+def prepare(raw):
+    if not COLS.issubset(raw.columns):
+        raise ValueError('缺少 date、code、shares_10k、source 字段')
+    d = raw[list(sorted(COLS))].copy()
+    d['date'] = pd.to_datetime(d['date'], errors='coerce').dt.normalize()
+    d['code'] = d['code'].astype(str).str.strip().str.zfill(6)
+    d['shares_10k'] = pd.to_numeric(d['shares_10k'], errors='coerce')
+    d = d[d['code'].isin(ETFS) & d['date'].notna() &
+          d['shares_10k'].gt(0) & d['date'].le(TODAY)].copy()
+    # Reject grossly implausible legacy unit mistakes; do not silently rescale.
+    suspect = d['shares_10k'].gt(1e8)
+    if suspect.any():
+        st.warning(f'已隔离 {int(suspect.sum())} 条疑似单位错误记录（超过1亿万份），请核对原始CSV。')
+        d = d[~suspect].copy()
+    d = d.drop_duplicates(['date', 'code'], keep='last').sort_values(['code', 'date'])
+    return d.reset_index(drop=True)
 
 with st.sidebar:
-    st.header('数据设置')
-    mode = st.radio('数据来源', ['GitHub自动采集', '本地CSV', '上传CSV'], index=0)
-    upload = st.file_uploader('上传CSV', type='csv') if mode == '上传CSV' else None
-    if st.button('刷新数据'):
-        load_remote.clear()
-        load_local.clear()
+    st.header('设置')
+    mode = st.radio('份额数据来源', ['GitHub自动采集', '仓库本地CSV', '上传CSV'])
+    uploaded = st.file_uploader('上传CSV', type='csv') if mode == '上传CSV' else None
+    if st.button('立即刷新'):
+        remote_csv.clear()
+        local_csv.clear()
         st.rerun()
-    st.caption('自动采集文件：data/shares.csv；数据单位统一为万份。')
 
 try:
     if mode == 'GitHub自动采集':
-        raw = load_remote()
-    elif mode == '本地CSV':
-        raw = load_local()
+        raw = remote_csv()
+    elif mode == '仓库本地CSV':
+        raw = local_csv()
     else:
-        if upload is None:
-            st.info('请先上传CSV文件。')
+        if uploaded is None:
+            st.info('请先上传CSV')
             st.stop()
-        raw = pd.read_csv(upload, dtype={'code': str})
-    data = clean(raw)
+        raw = pd.read_csv(uploaded, dtype={'code': str})
+    d = prepare(raw)
 except Exception as exc:
-    st.error(f'数据读取失败：{exc}')
-    st.info('检查GitHub仓库的 data/shares.csv 是否已提交，或切换本地/上传CSV。')
+    st.error(f'读取失败：{exc}')
+    st.stop()
+if d.empty:
+    st.warning('没有有效份额数据。')
     st.stop()
 
-if data.empty:
-    st.warning('CSV中没有有效的四只目标ETF份额记录。')
-    st.stop()
+max_date = d['date'].max()
+st.caption(f'最新披露日期：{max_date:%Y-%m-%d} ｜ {len(d)}条记录 ｜ 数据：{mode}')
+if (TODAY - max_date).days > 5:
+    st.warning('最新数据超过5个自然日，请检查采集任务和交易所披露情况。')
 
-latest_date = data['date'].max()
-today = pd.Timestamp.now(tz='Asia/Shanghai').tz_localize(None).normalize()
-lag = (today - latest_date).days
-st.caption(f'最新份额统计日：{latest_date:%Y-%m-%d} · 数据记录：{len(data)}条 · 数据来源：{mode}')
-if lag > 5:
-    st.warning(f'最新份额数据距今已有{lag}个自然日，请检查GitHub Actions。')
-
-with st.sidebar:
-    codes = st.multiselect('选择ETF', list(ETFS), default=list(ETFS), format_func=lambda x: f'{x} {ETFS[x]}')
-    display_days = st.slider('趋势图显示最近自然日', 7, 180, 60)
-
+codes = st.multiselect('监测ETF', list(ETFS), default=list(ETFS),
+                       format_func=lambda c: f'{c} {ETFS[c]}')
+period = st.select_slider('图表时间范围（自然日）', options=[7, 14, 30, 60, 90, 180, 365], value=60,
+                          format_func=lambda n: f'{n}日')
 if not codes:
     st.info('请至少选择一只ETF。')
     st.stop()
 
-selected = data[data['code'].isin(codes)].copy()
-selected['ETF'] = selected['code'].map(ETFS)
-selected['prev_date'] = selected.groupby('code')['date'].shift(1)
-selected['prev_shares'] = selected.groupby('code')['shares_10k'].shift(1)
-selected['change_10k'] = selected['shares_10k'] - selected['prev_shares']
-selected['change_pct'] = selected['change_10k'] / selected['prev_shares'] * 100
-selected['gap_days'] = (selected['date'] - selected['prev_date']).dt.days
+# All metrics computed on the full history, never on chart-filtered rows.
+d['name'] = d['code'].map(ETFS)
+d['prev_date'] = d.groupby('code')['date'].shift(1)
+d['prev_shares'] = d.groupby('code')['shares_10k'].shift(1)
+d['delta_10k'] = d['shares_10k'] - d['prev_shares']
+d['delta_pct'] = d['delta_10k'] / d['prev_shares'] * 100
+d['gap_days'] = (d['date'] - d['prev_date']).dt.days
 
-st.subheader('最新份额概览')
+# Period comparison: latest observation at or before cutoff; indicate missing baselines.
+def compare(sub, n):
+    last = sub.iloc[-1]
+    base = sub[sub['date'] <= last['date'] - pd.Timedelta(days=n)]
+    if base.empty:
+        return None
+    b = base.iloc[-1]
+    return last['shares_10k'] - b['shares_10k'], (last['shares_10k'] / b['shares_10k'] - 1) * 100, b['date']
+
+selected = d[d['code'].isin(codes)].copy()
 latest = selected.groupby('code', sort=False).tail(1).copy()
-cols = st.columns(len(latest))
-for col, (_, row) in zip(cols, latest.iterrows()):
-    with col:
-        delta = None if pd.isna(row['change_10k']) else f"{row['change_10k']:+,.2f} 万份"
-        st.metric(f"{row['code']} {ETFS[row['code']]}", f"{row['shares_10k']:,.2f} 万份", delta=delta)
-        st.caption(f"统计日 {row['date']:%m-%d}" + (f"；距上次记录{int(row['gap_days'])}天" if pd.notna(row['gap_days']) else ''))
+rows = []
+for _, r in latest.iterrows():
+    sub = selected[selected['code'] == r['code']]
+    row = {'代码': r['code'], 'ETF': r['name'], '最新日期': r['date'].strftime('%Y-%m-%d'),
+           '份额(万份)': r['shares_10k'], '上次变化(万份)': r['delta_10k'],
+           '上次变化(%)': r['delta_pct'], '间隔(自然日)': r['gap_days']}
+    for days in [5, 10, 20]:
+        result = compare(sub, days)
+        row[f'{days}日变化(万份)'] = result[0] if result else None
+        row[f'{days}日变化(%)'] = result[1] if result else None
+    rows.append(row)
+summary = pd.DataFrame(rows)
 
-st.caption('卡片中的增减是与该基金上一条有效记录相比；如中间缺少交易日，不代表单日变化。')
+st.subheader('最新份额与多周期变化')
+st.dataframe(summary, hide_index=True, use_container_width=True,
+             column_config={c: st.column_config.NumberColumn(c, format='%.2f')
+                            for c in summary.columns if '(万份)' in c or '(%)' in c})
+st.caption('5/10/20日为自然日回看：与截止日前最近一次可用观测比较，不保证恰好5/10/20个交易日。')
 
-st.subheader('最新数据明细')
-view = latest[['date','code','ETF','shares_10k','change_10k','change_pct','gap_days','source']].copy()
-view.columns = ['统计日期','代码','ETF','份额（万份）','较上次变化（万份）','变化率（%）','相隔自然日','来源']
-st.dataframe(view, hide_index=True, use_container_width=True, column_config={'统计日期': st.column_config.DateColumn(format='YYYY-MM-DD')})
+# Aggregate only on dates where all four ETFs have a published observation.
+wide = d.pivot_table(index='date', columns='code', values='shares_10k', aggfunc='last')
+complete = wide.dropna(subset=list(ETFS)) if set(ETFS).issubset(wide.columns) else pd.DataFrame()
+if not complete.empty:
+    complete = complete.copy()
+    complete['合计(万份)'] = complete[list(ETFS)].sum(axis=1)
+    st.metric('四只ETF最近共同披露日合计份额', f"{complete['合计(万份)'].iloc[-1]:,.2f} 万份",
+              help=f"共同披露日期：{complete.index[-1]:%Y-%m-%d}；仅四只基金同日齐全时合计")
+    if len(complete) >= 2:
+        change = complete['合计(万份)'].iloc[-1] - complete['合计(万份)'].iloc[-2]
+        st.caption(f'相邻两个完整披露日合计变化：{change:+,.2f}万份（{complete.index[-2]:%Y-%m-%d} → {complete.index[-1]:%Y-%m-%d}）')
+else:
+    st.info('尚无四只ETF同日齐全的记录，暂不计算合计。')
 
 st.subheader('份额变化趋势')
-recent = selected[selected['date'] >= latest_date - pd.Timedelta(days=display_days)].copy()
-fig = px.line(recent, x='date', y='shares_10k', color='ETF', markers=True,
-              labels={'date':'统计日期','shares_10k':'基金份额（万份）','ETF':'基金'})
-fig.update_layout(hovermode='x unified')
-st.plotly_chart(fig, use_container_width=True)
+chart = selected[selected['date'] >= max_date - pd.Timedelta(days=period)].copy()
+if not chart.empty:
+    fig = px.line(chart, x='date', y='shares_10k', color='name', markers=True,
+                  labels={'date': '统计日期', 'shares_10k': '份额（万份）', 'name': 'ETF'})
+    fig.update_layout(legend=dict(orientation='h', y=-0.30, x=0), margin=dict(l=10, r=10, t=20, b=95),
+                      height=470, hovermode='x unified')
+    fig.update_xaxes(range=[chart['date'].min() - pd.Timedelta(days=1), chart['date'].max() + pd.Timedelta(days=1)],
+                     tickformat='%m-%d')
+    st.plotly_chart(fig, use_container_width=True)
 
-st.subheader('各ETF多周期变化')
-periods = [1, 5, 10, 20]
-rows = []
-for code in codes:
-    part = selected[selected['code'] == code].sort_values('date')
-    last = part.iloc[-1]
-    item = {'代码':code, 'ETF':ETFS[code], '最新日期':last['date'].date().isoformat()}
-    for n in periods:
-        # Compare with the observation at least n calendar days earlier;
-        # label explicitly so this is not mistaken for n trading sessions.
-        target = last['date'] - pd.Timedelta(days=n)
-        older = part[part['date'] <= target]
-        if older.empty:
-            item[f'{n}自然日变化（万份）'] = None
-            item[f'{n}自然日变化率（%）'] = None
-        else:
-            base = older.iloc[-1]['shares_10k']
-            item[f'{n}自然日变化（万份）'] = round(last['shares_10k'] - base, 2)
-            item[f'{n}自然日变化率（%）'] = round((last['shares_10k'] / base - 1)*100, 2)
-    rows.append(item)
-period_table = pd.DataFrame(rows)
-st.dataframe(period_table, hide_index=True, use_container_width=True)
-st.caption('这里的1/5/10/20是自然日回看窗口，不是交易日；使用窗口起点当日或之前最近一条有效观测。历史不足时留空。')
+st.subheader('相对份额变化（起点=100）')
+if not chart.empty:
+    rel = chart.copy()
+    rel['指数'] = rel.groupby('code')['shares_10k'].transform(lambda x: x / x.iloc[0] * 100)
+    fig = px.line(rel, x='date', y='指数', color='name', markers=True,
+                  labels={'date': '日期', '指数': '相对份额指数', 'name': 'ETF'})
+    fig.update_layout(height=420, legend=dict(orientation='h', y=-0.32, x=0),
+                      margin=dict(l=10, r=10, t=20, b=100))
+    fig.update_xaxes(tickformat='%m-%d')
+    st.plotly_chart(fig, use_container_width=True)
 
-st.subheader('四只ETF合计份额')
-# Summing share counts is arithmetically valid, but not equivalent to RMB flows.
-pivot = data.pivot(index='date', columns='code', values='shares_10k')
-complete = pivot.dropna(subset=list(ETFS))
-if len(complete):
-    total = complete[list(ETFS)].sum(axis=1).rename('合计份额（万份）').reset_index()
-    st.metric('最新四只合计（仅完整共同日期）', f"{total.iloc[-1,1]:,.2f} 万份")
-    st.caption(f"合计对应日期：{total.iloc[-1,0]:%Y-%m-%d}。四只ETF都在该日有数据时才计算，避免混用不同日期。")
-    fig_total = px.line(total, x='date', y='合计份额（万份）', markers=True, labels={'date':'统计日期'})
-    st.plotly_chart(fig_total, use_container_width=True)
+st.subheader('每次披露相对上次披露的份额变化')
+changes = chart.dropna(subset=['delta_10k']).copy()
+if not changes.empty:
+    fig = px.bar(changes, x='date', y='delta_10k', color='name', barmode='group',
+                 labels={'date': '统计日期', 'delta_10k': '变化（万份）', 'name': 'ETF'})
+    fig.update_layout(height=420, legend=dict(orientation='h', y=-0.32, x=0),
+                      margin=dict(l=10, r=10, t=20, b=100))
+    fig.update_xaxes(tickformat='%m-%d')
+    st.plotly_chart(fig, use_container_width=True)
+
+st.subheader('异常份额变化提示')
+alerts = changes[changes['delta_pct'].abs() >= 5].sort_values('date', ascending=False)
+if alerts.empty:
+    st.success('当前显示区间未发现单次披露份额变化达到±5%的记录。')
 else:
-    st.info('目前没有四只ETF在同一日期的完整数据，暂不计算合计。')
+    for _, r in alerts.head(12).iterrows():
+        st.warning(f"{r['date']:%Y-%m-%d} · {r['code']} · 份额变化 {r['delta_pct']:+.2f}%（{r['delta_10k']:+,.2f}万份；距上次披露 {int(r['gap_days'])} 天）")
 
-st.subheader('数据完整性')
-coverage = []
-for code in ETFS:
-    p = data[data['code'] == code]
-    coverage.append({'代码':code, 'ETF':ETFS[code], '记录数':len(p),
-                     '最早日期':p['date'].min().date().isoformat() if len(p) else '—',
-                     '最新日期':p['date'].max().date().isoformat() if len(p) else '—'})
-st.dataframe(pd.DataFrame(coverage), hide_index=True, use_container_width=True)
+if not complete.empty and len(complete) >= 2:
+    previous, current = complete.iloc[-2], complete.iloc[-1]
+    signs = [(current[c] - previous[c]) for c in ETFS]
+    if all(v > 0 for v in signs):
+        st.info('最近两个四只ETF同日齐全的披露日：四只份额同步增加。不能据此确认国家队买入。')
+    elif all(v < 0 for v in signs):
+        st.info('最近两个四只ETF同日齐全的披露日：四只份额同步减少。不能据此确认国家队卖出。')
 
-st.subheader('导出数据')
-st.download_button('下载清洗后的份额历史CSV', data.to_csv(index=False).encode('utf-8-sig'),
+st.subheader('资金规模与指数联动')
+st.info('尚未接入与份额日期严格匹配的ETF单位净值及沪深300指数历史行情，因此不显示未经验证的净申赎金额，也不生成“国家队买卖”结论。')
+st.caption('理论估算：份额变化（万份）× 当日每份净值（元）÷ 10,000 = 亿元。此值仅为份额变动对应的参考规模，并非真实资金流水。')
+st.caption('ETF份额变化存在申赎确认及披露滞后；跨非交易日或数据缺口的差额不能标为单日变化。')
+
+st.download_button('下载完整份额历史CSV', d[['date', 'code', 'shares_10k', 'source']].to_csv(index=False).encode('utf-8-sig'),
                    file_name='etf_shares_history.csv', mime='text/csv')
-
-st.divider()
-st.info('重要：份额增加/减少只是ETF申购赎回的代理线索，不能识别交易主体。当前没有按统计日期匹配的基金净值，因此不计算人民币净流入或国家队评分。行情价格、指数涨跌与实际持仓需另行接入并校验。')
