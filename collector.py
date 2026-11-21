@@ -1,167 +1,289 @@
-"""ETF share collector for GitHub Actions. Collect official exchange-published ETF share observations using AKShare. Store verified observations in data/shares.csv (unit: 10,000 shares). Do not treat missing or stale observations as fresh data. """
+
+"""ETF share collector for GitHub Actions."""
+
 import datetime as dt
 import pathlib
 import random
-import re
 import time
 
 import pandas as pd
+import akshare as ak
 
-ETFS = {'510300', '510330', '510310', '159919'}
-SSE_ETFS = ETFS - {'159919'}
-SZSE_ETFS = {'159919'}
-OUT = pathlib.Path(__file__).resolve().parent / 'data' / 'shares.csv'
-COLS = ['date', 'code', 'shares_10k', 'source']
+ETFS = {
+    "510300": "SSE",
+    "510330": "SSE",
+    "510310": "SSE",
+    "159919": "SZSE",
+}
+
+OUT = pathlib.Path(__file__).resolve().parent / "data" / "shares.csv"
+COLS = ["date", "code", "shares_10k", "source"]
 TZ = dt.timezone(dt.timedelta(hours=8))
 
-# IMPORTANT: Set only after checking exchange/AKShare documentation and sample values.
-# The SZSE function's raw '基金份额' is commonly reported in shares (份),
-# while the SSE function may report 10k shares (万份). This must be verified.
-# Until confirmed, leave a source at None to prevent wrongly scaled imports.
-SOURCE_RAW_UNITS = {'SSE': None, 'SZSE': None}
+# Raw units: "shares" or "10k_shares".
+# Verify against exchange-published figures before production use.
+RAW_UNITS = {
+    "SSE": "shares",
+    "SZSE": "shares",
+}
+
+LOOKBACK_DAYS = 14
 
 
-def retry(label, fn, attempts=3):
-    for attempt in range(1, attempts + 1):
+def retry(label, func, attempts=3):
+    for i in range(attempts):
         try:
-            return fn()
-        except Exception as exc:
-            print(f'WARNING {label} attempt {attempt}/{attempts}: '
-                  f'{type(exc).__name__}: {str(exc)[:240]}', flush=True)
-            if attempt < attempts:
-                time.sleep(min(15, 2 ** attempt) + random.random())
+            return func()
+        except Exception as e:
+            print(
+                f"WARNING {label} attempt {i+1}/{attempts}: "
+                f"{type(e).__name__}: {e}",
+                flush=True,
+            )
+            if i + 1 < attempts:
+                time.sleep(2 ** (i + 1) + random.random())
     return None
 
 
-def numeric(value):
-    try:
-        x = float(str(value).replace(',', '').strip())
-        return x if pd.notna(x) and x > 0 else None
-    except (TypeError, ValueError):
-        return None
-
-
-def parse_date(value):
-    try:
-        parsed = pd.to_datetime(value, errors='coerce')
-        if pd.isna(parsed):
-            return None
-        return parsed.date()
-    except (TypeError, ValueError, OverflowError):
-        return None
-
-
-def normalize(frame, source, fallback_date=None):
-    if frame is None or frame.empty:
-        print(f'INFO {source}: empty response', flush=True)
-        return pd.DataFrame(columns=COLS)
-    print(f'DIAGNOSTIC {source} columns: {frame.columns.tolist()}', flush=True)
-    print(f'DIAGNOSTIC {source} sample:\n{frame.head(3).to_string(index=False)}', flush=True)
-    if '基金代码' not in frame.columns or '基金份额' not in frame.columns:
-        print(f'WARNING {source}: unexpected column schema; skipping', flush=True)
+def normalize(df, source, fallback_date=None):
+    if df is None or df.empty:
         return pd.DataFrame(columns=COLS)
 
-    unit = SOURCE_RAW_UNITS[source]
-    if unit not in ('shares', '10k_shares'):
-        print(f'WARNING {source}: raw share unit not verified; '
-              'diagnostics printed, observations NOT imported', flush=True)
+    required = {"基金代码", "基金份额"}
+    if not required.issubset(df.columns):
+        print(f"WARNING {source}: unexpected columns {list(df.columns)}")
         return pd.DataFrame(columns=COLS)
 
-    allowed = SSE_ETFS if source == 'SSE' else SZSE_ETFS
-    today = dt.datetime.now(TZ).date()
+    unit = RAW_UNITS.get(source)
+    if unit not in ("shares", "10k_shares"):
+        raise ValueError(f"Unverified unit for {source}")
+
     rows = []
-    for _, row in frame.iterrows():
-        raw_code = str(row.get('基金代码', '')).strip().split('.')[0]
-        match = re.search(r'(?<!\d)\d{6}(?!\d)', raw_code)
-        if not match:
+
+    for _, r in df.iterrows():
+        code = str(r["基金代码"]).split(".")[0].strip().zfill(6)
+
+        if ETFS.get(code) != source:
             continue
-        code = match.group(0)
-        if code not in allowed:
+
+        raw = pd.to_numeric(
+            str(r["基金份额"]).replace(",", ""),
+            errors="coerce",
+        )
+
+        if pd.isna(raw) or raw <= 0:
             continue
-        value = numeric(row.get('基金份额'))
-        if value is None:
+
+        shares_10k = (
+            float(raw) / 10000
+            if unit == "shares"
+            else float(raw)
+        )
+
+        raw_date = r.get(
+            "统计日期",
+            r.get("日期", fallback_date),
+        )
+
+        if pd.isna(raw_date):
+            raw_date = fallback_date
+
+        date = pd.to_datetime(raw_date, errors="coerce")
+
+        if pd.isna(date):
             continue
-        raw_date = row.get('统计日期', row.get('日期', fallback_date))
-        day = parse_date(raw_date)
-        if day is None or day > today:
-            continue
-        shares_10k = value / 10000 if unit == 'shares' else value
-        if not 0 < shares_10k < 1e10:
-            continue
-        rows.append({'date': day.isoformat(), 'code': code,
-                     'shares_10k': shares_10k, 'source': source})
-    return pd.DataFrame(rows, columns=COLS)
+
+        day = date.strftime("%Y-%m-%d")
+
+        rows.append({
+            "date": day,
+            "code": code,
+            "shares_10k": shares_10k,
+            "source": source,
+        })
+
+    result = pd.DataFrame(rows, columns=COLS)
+
+    if not result.empty:
+        print(
+            f"INFO {source}: {len(result)} target records; "
+            f"raw unit={unit}",
+            flush=True,
+        )
+
+    return result
 
 
-def read_old():
+def load_old():
     if not OUT.exists():
         return pd.DataFrame(columns=COLS)
-    frame = pd.read_csv(OUT, dtype={'code': str})
-    if not set(COLS).issubset(frame.columns):
-        raise ValueError('Existing shares.csv schema mismatch; refusing to overwrite')
-    return frame[COLS].copy()
+
+    old = pd.read_csv(OUT, dtype={"code": str})
+
+    if not set(COLS).issubset(old.columns):
+        raise ValueError("Existing CSV has incompatible columns")
+
+    return old[COLS].copy()
+
+
+def collect_sse(today):
+    batches = []
+
+    for offset in range(1, LOOKBACK_DAYS + 1):
+        day = today - dt.timedelta(days=offset)
+
+        if day.weekday() >= 5:
+            continue
+
+        daystr = day.strftime("%Y%m%d")
+
+        frame = retry(
+            f"SSE {daystr}",
+            lambda d=daystr: ak.fund_etf_scale_sse(date=d),
+        )
+
+        if frame is not None:
+            result = normalize(frame, "SSE", day)
+
+            if not result.empty:
+                batches.append(result)
+
+        time.sleep(0.8)
+
+    return batches
+
+
+def collect_szse(today):
+    start = today - dt.timedelta(days=45)
+
+    frame = retry(
+        "SZSE",
+        lambda: ak.fund_scale_daily_szse(
+            start_date=start.strftime("%Y%m%d"),
+            end_date=today.strftime("%Y%m%d"),
+            symbol="ETF",
+        ),
+    )
+
+    if frame is None:
+        return []
+
+    result = normalize(frame, "SZSE")
+
+    return [result] if not result.empty else []
 
 
 def main():
-    import akshare as ak
     today = dt.datetime.now(TZ).date()
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    old = read_old()
-    print(f'INFO Today (Asia/Shanghai): {today}; existing rows: {len(old)}', flush=True)
-    print('INFO Verify SOURCE_RAW_UNITS before enabling imports.', flush=True)
+
+    print(f"ETF collection started: {today}", flush=True)
+
+    old = load_old()
+
     new = []
+    new.extend(collect_sse(today))
+    new.extend(collect_szse(today))
 
-    # Query the previous 14 calendar days to fill missing SSE observations.
-    for offset in range(1, 15):
-        day = today - dt.timedelta(days=offset)
-        if day.weekday() >= 5:
-            continue
-        label = f'SSE {day:%Y-%m-%d}'
-        frame = retry(label, lambda d=day: ak.fund_etf_scale_sse(date=d.strftime('%Y%m%d')))
-        if frame is not None:
-            data = normalize(frame, 'SSE', day)
-            if not data.empty:
-                new.append(data)
-        time.sleep(0.4)
-
-    # SZSE date-range endpoint. Historical observations can be delayed.
-    start = today - dt.timedelta(days=45)
-    frame = retry('SZSE', lambda: ak.fund_scale_daily_szse(
-        start_date=start.strftime('%Y%m%d'),
-        end_date=today.strftime('%Y%m%d'), symbol='ETF'))
-    if frame is not None:
-        data = normalize(frame, 'SZSE')
-        if not data.empty:
-            new.append(data)
-
-    # Never rewrite an existing file if no validated observations were fetched.
     if not new:
-        raise RuntimeError('No validated ETF share observations fetched. '
-                           'Existing CSV unchanged. Review DIAGNOSTIC logs and verify units.')
+        raise RuntimeError(
+            "No target ETF records fetched. "
+            "Existing CSV preserved."
+        )
 
-    merged = pd.concat([old] + new, ignore_index=True)
-    merged['date'] = pd.to_datetime(merged['date'], errors='coerce').dt.strftime('%Y-%m-%d')
-    merged['code'] = merged['code'].astype(str).str.zfill(6)
-    merged['shares_10k'] = pd.to_numeric(merged['shares_10k'], errors='coerce')
-    merged = merged[merged['code'].isin(ETFS) & merged['date'].notna()
-                    & merged['shares_10k'].gt(0)].copy()
-    merged = merged.drop_duplicates(['date', 'code'], keep='last').sort_values(['date', 'code'])
-    tmp = OUT.with_suffix('.csv.tmp')
-    merged.to_csv(tmp, index=False, encoding='utf-8')
-    tmp.replace(OUT)
+    incoming = pd.concat(new, ignore_index=True)
 
-    print(f'Saved {len(merged)} rows; validated batches {len(new)}', flush=True)
-    for code in sorted(ETFS):
-        sub = merged[merged['code'] == code]
-        if sub.empty:
-            print(f'WARNING {code}: no observations', flush=True)
-        else:
-            latest = sub['date'].max()
-            age = (today - dt.date.fromisoformat(latest)).days
-            print(f'INFO {code}: latest={latest}, age={age} calendar days', flush=True)
-            if age > 5:
-                print(f'WARNING {code}: stale observations', flush=True)
+    incoming["date"] = pd.to_datetime(
+        incoming["date"], errors="coerce"
+    ).dt.strftime("%Y-%m-%d")
+
+    incoming = incoming[
+        incoming["code"].isin(ETFS)
+        & incoming["date"].notna()
+    ]
+
+    incoming = incoming[
+        incoming["date"] <= today.isoformat()
+    ]
+
+    if incoming.empty:
+        raise RuntimeError("No valid target ETF observations")
+
+    # Never overwrite an existing observation with a
+    # different value without manual reconciliation.
+    old_keys = old.copy()
+
+    if not old_keys.empty:
+        old_keys["code"] = old_keys["code"].str.zfill(6)
+        old_keys["date"] = pd.to_datetime(
+            old_keys["date"], errors="coerce"
+        ).dt.strftime("%Y-%m-%d")
+
+        existing = set(zip(old_keys["date"], old_keys["code"]))
+
+        incoming = incoming[
+            ~incoming.apply(
+                lambda r: (r["date"], r["code"]) in existing,
+                axis=1,
+            )
+        ]
+
+    merged = pd.concat([old, incoming], ignore_index=True)
+
+    merged["code"] = merged["code"].astype(str).str.zfill(6)
+    merged["shares_10k"] = pd.to_numeric(
+        merged["shares_10k"], errors="coerce"
+    )
+
+    merged = merged[
+        merged["code"].isin(ETFS)
+        & merged["shares_10k"].gt(0)
+    ]
+
+    merged = merged.drop_duplicates(
+        ["date", "code"], keep="first"
+    ).sort_values(["date", "code"])
+
+    print("\n===== ETF COLLECTION REPORT =====")
+
+    for code in ETFS:
+        subset = merged[merged["code"] == code]
+        fresh = incoming[incoming["code"] == code]
+
+        if subset.empty:
+            print(f"{code}: NO DATA")
+            continue
+
+        latest = subset.iloc[-1]
+
+        print(
+            f"{code}: latest={latest['date']}, "
+            f"shares_10k={latest['shares_10k']:.4f}, "
+            f"new_rows={len(fresh)}"
+        )
+
+    print(f"New records: {len(incoming)}")
+    print(f"Total records: {len(merged)}")
+
+    # Write only after validation.
+    OUT.parent.mkdir(parents=True, exist_ok=True)
+    temp = OUT.with_suffix(".csv.tmp")
+    merged.to_csv(temp, index=False, encoding="utf-8")
+    temp.replace(OUT)
+
+    print("CSV saved successfully", flush=True)
+
+    missing = [
+        code for code in ETFS
+        if incoming[incoming["code"] == code].empty
+    ]
+
+    if missing:
+        print(
+            "WARNING: No new observations for: "
+            + ", ".join(missing),
+            flush=True,
+        )
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
