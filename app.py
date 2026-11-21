@@ -15,7 +15,7 @@ COLS = {'date', 'code', 'shares_10k', 'source'}
 TODAY = pd.Timestamp.now(tz='Asia/Shanghai').tz_localize(None).normalize()
 
 st.set_page_config(page_title='沪深300 ETF资金观察', layout='wide', initial_sidebar_state='collapsed')
-st.title('沪深300 ETF资金观察')
+st.title('沪深300 ETF资金观察 · V3')
 st.caption('四只沪深300ETF · 交易所披露份额（万份） · 不代表中央汇金交易流水')
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -94,6 +94,16 @@ d['prev_shares'] = d.groupby('code')['shares_10k'].shift(1)
 d['delta_10k'] = d['shares_10k'] - d['prev_shares']
 d['delta_pct'] = d['delta_10k'] / d['prev_shares'] * 100
 d['gap_days'] = (d['date'] - d['prev_date']).dt.days
+# Weekday gaps are preliminary only: exchange holidays require a trading calendar.
+def weekday_missing(prev, current):
+    if pd.isna(prev) or pd.isna(current):
+        return 0
+    return max(0, len(pd.bdate_range(prev, current)) - 2)
+
+d['missing_weekdays'] = [weekday_missing(a, b) for a, b in zip(d['prev_date'], d['date'])]
+d['alert_10pct'] = d['delta_pct'].abs().ge(10)
+d['suspect_gap'] = d['missing_weekdays'].gt(0)
+
 
 # Period comparison: latest observation at or before cutoff; indicate missing baselines.
 def compare(sub, n):
@@ -171,13 +181,53 @@ if not changes.empty:
     fig.update_xaxes(tickformat='%m-%d')
     st.plotly_chart(fig, use_container_width=True)
 
-st.subheader('异常份额变化提示')
-alerts = changes[changes['delta_pct'].abs() >= 5].sort_values('date', ascending=False)
-if alerts.empty:
-    st.success('当前显示区间未发现单次披露份额变化达到±5%的记录。')
-else:
-    for _, r in alerts.head(12).iterrows():
-        st.warning(f"{r['date']:%Y-%m-%d} · {r['code']} · 份额变化 {r['delta_pct']:+.2f}%（{r['delta_10k']:+,.2f}万份；距上次披露 {int(r['gap_days'])} 天）")
+st.subheader('数据质量检查')
+quality = selected[selected['prev_date'].notna()].copy()
+large = quality[quality['alert_10pct']].copy()
+gaps = quality[quality['suspect_gap']].copy()
+a, b, c = st.columns(3)
+a.metric('单次变化≥10%', len(large))
+b.metric('疑似缺失工作日区间', len(gaps))
+c.metric('重复日期代码', int(raw.duplicated(['date', 'code']).sum()) if {'date', 'code'}.issubset(raw.columns) else 0)
+st.caption('工作日缺口为周一至周五的初步筛查，未扣除中国法定休市日；跨缺口的变化不等于单日净申赎。异常阈值仅用于提示，不代表数据错误。')
+if not large.empty:
+    st.warning('存在单次披露变化达到10%的记录，请逐条与交易所核对。')
+    st.dataframe(large[['date','code','name','prev_date','shares_10k','delta_10k','delta_pct','gap_days','missing_weekdays']].sort_values('date', ascending=False),
+                 hide_index=True, use_container_width=True)
+if not gaps.empty:
+    st.info('以下区间疑似存在工作日数据缺口，可能包含交易所休市日。')
+    st.dataframe(gaps[['code','name','prev_date','date','missing_weekdays','delta_10k']], hide_index=True, use_container_width=True)
+if large.empty and gaps.empty:
+    st.success('未发现超过10%的单次份额变化或疑似工作日缺口。')
+
+st.subheader('申赎金额参考估算（可选净值CSV）')
+st.caption('上传含 date、code、nav 三列的CSV，nav为对应统计日期每份基金单位净值（元）。不使用实时市价代替净值。')
+nav_file = st.file_uploader('上传已核实的历史单位净值CSV', type='csv', key='nav_upload')
+if nav_file is not None:
+    try:
+        nav = pd.read_csv(nav_file, dtype={'code':str}, encoding='utf-8-sig')
+        if not {'date','code','nav'}.issubset(nav.columns):
+            raise ValueError('CSV必须包含 date、code、nav')
+        nav['date'] = pd.to_datetime(nav['date'], errors='coerce').dt.normalize()
+        nav['code'] = nav['code'].astype(str).str.zfill(6)
+        nav['nav'] = pd.to_numeric(nav['nav'], errors='coerce')
+        nav = nav.dropna(subset=['date','nav'])
+        nav = nav[nav['code'].isin(ETFS) & nav['nav'].gt(0)]
+        if nav.duplicated(['date','code']).any():
+            raise ValueError('净值CSV存在同一日期、同一ETF的重复记录，请先核实')
+        estimates = selected.merge(nav[['date','code','nav']], on=['date','code'], how='inner')
+        estimates = estimates[estimates['delta_10k'].notna() & estimates['missing_weekdays'].eq(0)].copy()
+        estimates['估算变化(亿元)'] = estimates['delta_10k'] * estimates['nav'] / 10000
+        if estimates.empty:
+            st.warning('没有可对齐且无疑似工作日缺口的份额变化与净值数据。')
+        else:
+            st.dataframe(estimates[['date','code','name','delta_10k','nav','估算变化(亿元)','delta_pct','alert_10pct']],
+                         hide_index=True, use_container_width=True)
+            st.download_button('下载申赎参考估算CSV', estimates.to_csv(index=False).encode('utf-8-sig'),
+                               file_name='etf_estimated_flow.csv', mime='text/csv')
+            st.warning('估算仅为份额变化乘以对应日期单位净值，不等于实际申赎现金流或国家队买卖；10%以上变化仍需人工核实。')
+    except Exception as exc:
+        st.error(f'净值文件无法使用：{exc}')
 
 if not complete.empty and len(complete) >= 2:
     previous, current = complete.iloc[-2], complete.iloc[-1]
@@ -188,8 +238,8 @@ if not complete.empty and len(complete) >= 2:
         st.info('最近两个四只ETF同日齐全的披露日：四只份额同步减少。不能据此确认国家队卖出。')
 
 st.subheader('资金规模与指数联动')
-st.info('尚未接入与份额日期严格匹配的ETF单位净值及沪深300指数历史行情，因此不显示未经验证的净申赎金额，也不生成“国家队买卖”结论。')
-st.caption('理论估算：份额变化（万份）× 当日每份净值（元）÷ 10,000 = 亿元。此值仅为份额变动对应的参考规模，并非真实资金流水。')
+st.info('可在上方上传已核实的同日净值CSV进行参考估算；尚未自动接入沪深300指数历史行情，不生成国家队买卖结论。')
+st.caption('参考估算：份额变化（万份）× 同日期每份净值（元）÷ 10,000 = 亿元。此值并非真实资金流水。')
 st.caption('ETF份额变化存在申赎确认及披露滞后；跨非交易日或数据缺口的差额不能标为单日变化。')
 
 st.download_button('下载完整份额历史CSV', d[['date', 'code', 'shares_10k', 'source']].to_csv(index=False).encode('utf-8-sig'),
