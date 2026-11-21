@@ -1,0 +1,41 @@
+
+name: ETF每日自动采集
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '30 9 * * 1-5'
+      timezone: Asia/Shanghai
+
+permissions:
+  contents: write
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: 下载仓库代码
+        uses: actions/checkout@v4
+
+      - name: 安装Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+
+      - name: 采集ETF数据
+        run: python collector.py
+
+      - name: 保存历史数据
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/
+          if ! git diff --cached --quiet; then
+            git commit -m "自动更新ETF份额数据"
+            git push
+          fi
