@@ -27,6 +27,54 @@ RATIO_LOCAL = Path(__file__).resolve().parent / 'data' / 'etf_market_ratio.csv'
 RATIO_REMOTE = 'https://raw.githubusercontent.com/zee8765/etf-monitor/main/data/etf_market_ratio.csv'
 RATIO_COLS = {'date', 'etf_market_cap_yi', 'csi300_float_cap_yi', 'csi300_close'}
 
+COMPONENTS_LOCAL = Path(__file__).resolve().parent / 'data' / 'etf_market_components.csv'
+COMPONENTS_REMOTE = 'https://raw.githubusercontent.com/zee8765/etf-monitor/main/data/etf_market_components.csv'
+
+@st.cache_data(ttl=300, show_spinner=False)
+def components_remote_csv():
+    import requests
+    r = requests.get(COMPONENTS_REMOTE, timeout=12, headers={'Cache-Control': 'no-cache'})
+    if r.status_code == 404:
+        return None
+    r.raise_for_status()
+    return pd.read_csv(StringIO(r.text))
+
+def components_panel():
+    if COMPONENTS_LOCAL.exists():
+        raw = pd.read_csv(COMPONENTS_LOCAL)
+    else:
+        raw = components_remote_csv()
+    if raw is None:
+        st.warning('市值和指数采集文件尚未生成。')
+        return
+    required = {'date', 'etf_market_cap_yi', 'csi300_close'}
+    if not required.issubset(raw.columns):
+        st.warning('ETF市值和指数文件缺少必要字段。')
+        return
+    x = raw[['date', 'etf_market_cap_yi', 'csi300_close']].copy()
+    x['date'] = pd.to_datetime(x['date'], errors='coerce')
+    for c in ('etf_market_cap_yi', 'csi300_close'):
+        x[c] = pd.to_numeric(x[c], errors='coerce')
+    x = x.dropna().sort_values('date').drop_duplicates('date', keep='last')
+    x = x[(x['etf_market_cap_yi'] > 0) & (x['csi300_close'] > 0) & (x['date'] <= TODAY)]
+    if x.empty:
+        st.warning('ETF市值和指数数据没有有效的共同日期。')
+        return
+    st.info('已自动显示真实的四只ETF合计市值与沪深300指数。由于尚无经过核实的沪深300成分股流通市值数据，橙线暂为ETF市值（亿元），不是市值占比。')
+    fig = make_subplots(specs=[[{'secondary_y': True}]])
+    fig.add_trace(go.Scatter(x=x['date'], y=x['csi300_close'], name='沪深300指数（点）',
+                             mode='lines+markers', line={'color':'#42a5f5','width':2.4}), secondary_y=False)
+    fig.add_trace(go.Scatter(x=x['date'], y=x['etf_market_cap_yi'], name='四只ETF合计市值（亿元）',
+                             mode='lines+markers', line={'color':'#ff9f43','width':2.4}), secondary_y=True)
+    fig.update_yaxes(title_text='沪深300指数（点）', secondary_y=False)
+    fig.update_yaxes(title_text='四只ETF合计市值（亿元）', secondary_y=True)
+    fig.update_xaxes(rangeslider={'visible': True, 'thickness':0.09}, tickformat='%m-%d')
+    fig.update_layout(height=460, margin={'l':5,'r':5,'t':15,'b':85},
+                      hovermode='x unified', legend={'orientation':'h','y':-0.30,'x':0})
+    st.plotly_chart(fig, use_container_width=True)
+    st.caption(f"已采集 {len(x)} 个共同日期；最新 {x['date'].max():%Y-%m-%d}。市值为ETF份额×市场收盘价的参考估算，并非基金披露净资产。")
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def ratio_remote_csv():
     import requests
@@ -72,7 +120,7 @@ def ratio_panel():
             raw_ratio = ratio_remote_csv()
             label = 'GitHub历史市值CSV'
         if raw_ratio is None:
-            st.info('新图表已添加。尚缺真实的ETF合计市值、沪深300流通市值和指数历史数据，因此暂不绘制曲线。原有份额监测功能不受影响。')
+            components_panel()
             return
         x = clean_ratio(raw_ratio)
         if x.empty:
