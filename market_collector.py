@@ -11,7 +11,7 @@ CODES = ('510300', '510330', '510310', '159919')
 START = '20261001'  # Existing shares.csv begins in October 2026.
 
 
-def _clean_history(df, value_column, output_column, code):
+def _clean_history(df, value_column, output_column, code, end):
     if df is None or df.empty:
         raise ValueError(f'{code}: empty historical data')
     date_col = next((c for c in ('date', '日期') if c in df.columns), None)
@@ -44,7 +44,7 @@ def get_prices(code, end):
             end_date=end, adjust='')),
     ):
         try:
-            out = _clean_history(loader(), 'close', 'close', code)
+            out = _clean_history(loader(), 'close', 'close', code, end)
             print(f'INFO {code} ETF prices: {provider}, {len(out)} rows', flush=True)
             return out
         except Exception as exc:
@@ -63,7 +63,7 @@ def get_index(end):
             end_date=end)),
     ):
         try:
-            out = _clean_history(loader(), 'close', 'csi300_close', 'CSI300')
+            out = _clean_history(loader(), 'close', 'csi300_close', 'CSI300', end)
             print(f'INFO CSI300 index: {provider}, {len(out)} rows', flush=True)
             return out
         except Exception as exc:
