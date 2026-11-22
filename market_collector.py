@@ -1,8 +1,4 @@
-"""CSI300: collect 4 ETF market values and CSI300 close.
-
-No unverified denominator is fabricated. Supply verified data/float_cap_verified.csv
-(date,csi300_float_cap_yi) to publish data/etf_market_ratio.csv.
-"""
+"""CSI300: collect 4 ETF market values and CSI300 close. No unverified denominator is fabricated. Supply verified data/float_cap_verified.csv (date,csi300_float_cap_yi) to publish data/etf_market_ratio.csv. """
 from pathlib import Path
 import datetime as dt
 import time
@@ -40,7 +36,7 @@ def get_index(end):
     last_error = None
     for attempt in range(3):
         try:
-            df = ak.index_zh_a_hist(symbol='000300', period='daily',
+            df = ak.index_zh_a_hist_em(symbol='000300', period='daily',
                                     start_date=START, end_date=end)
             if df is None or df.empty or not {'日期', '收盘'}.issubset(df.columns):
                 raise ValueError('CSI300 index empty/unexpected')
