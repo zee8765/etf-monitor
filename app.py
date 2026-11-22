@@ -93,7 +93,11 @@ def components_panel():
         }
         cutoff = starts[choice]
         view_idx = idx[idx['date'] >= cutoff]
-        view_cap = x[x['date'] >= cutoff]
+        view_cap = x[x['date'] >= cutoff].copy()
+        view_cap['change_pct'] = view_cap['etf_market_cap_yi'].pct_change() * 100
+        view_cap['plot_cap'] = view_cap['etf_market_cap_yi'].where(
+            view_cap['change_pct'].abs().le(10) | view_cap['change_pct'].isna())
+        flagged = view_cap[view_cap['change_pct'].abs().gt(10)]
         fig = make_subplots(specs=[[{'secondary_y': True}]])
         fig.add_trace(go.Scatter(
             x=view_idx['date'], y=view_idx['csi300_close'],
@@ -102,12 +106,20 @@ def components_panel():
             hovertemplate='%{x|%Y-%m-%d}<br>沪深300：%{y:,.2f}点<extra></extra>'),
             secondary_y=False)
         fig.add_trace(go.Scatter(
-            x=view_cap['date'], y=view_cap['etf_market_cap_yi'],
+            x=view_cap['date'], y=view_cap['plot_cap'],
             name='四只ETF合计市值（亿元）', mode='lines+markers',
             line={'color':'#ffad48','width':2.5},
-            marker={'size':4},
+            marker={'size':4}, connectgaps=False,
             hovertemplate='%{x|%Y-%m-%d}<br>ETF市值：%{y:,.2f}亿元<extra></extra>'),
             secondary_y=True)
+        if not flagged.empty:
+            fig.add_trace(go.Scatter(
+                x=flagged['date'], y=flagged['etf_market_cap_yi'],
+                name='异常变化待核验', mode='markers',
+                marker={'color':'#f87171','size':10,'symbol':'x'},
+                customdata=flagged[['change_pct']].to_numpy(),
+                hovertemplate='%{x|%Y-%m-%d}<br>市值：%{y:,.2f}亿元<br>变化：%{customdata[0]:+.1f}%（待核验）<extra></extra>'),
+                secondary_y=True)
         fig.update_yaxes(title_text='沪深300（点）', secondary_y=False)
         fig.update_yaxes(title_text='ETF市值（亿元）', secondary_y=True)
         # Show the selected period only if the index history is actually available.
@@ -129,6 +141,11 @@ def components_panel():
                                 'modeBarButtonsToRemove':['toImage','lasso2d','select2d']})
         if idx['date'].min() > pd.Timestamp('2024-01-31'):
             st.warning(f"沪深300完整历史尚未生成，当前指数最早为 {idx['date'].min():%Y-%m-%d}。请运行一次新的市值采集任务。")
+        if not flagged.empty:
+            st.warning(f'发现 {len(flagged)} 个ETF市值变化超过10%的日期：红叉标注、橙线断开，需核对份额及价格。')
+            st.dataframe(flagged[['date','etf_market_cap_yi','change_pct']].rename(
+                columns={'date':'日期','etf_market_cap_yi':'ETF市值(亿元)','change_pct':'相邻变化(%)'}),
+                hide_index=True, use_container_width=True)
         st.caption(f"指数：{len(idx)}个有效日期；ETF合计市值：{len(x)}个有效日期（{x['date'].min():%Y-%m-%d}—{x['date'].max():%Y-%m-%d}）。没有ETF份额的日期不补造橙线。")
     except Exception as exc:
         st.warning(f'市值与指数图读取失败：{exc}')
