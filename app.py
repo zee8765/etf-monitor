@@ -276,8 +276,39 @@ def all_etf_panel():
     except Exception as exc:
         st.warning(f'候选ETF数据尚不可用：{exc}')
 
+def denominator_status():
+    st.subheader('沪深300流通市值分母采集状态')
+    path = Path(__file__).resolve().parent / 'data' / 'csi300_float_cap_observed.csv'
+    try:
+        if path.exists():
+            cap = pd.read_csv(path)
+        else:
+            import requests
+            url = 'https://raw.githubusercontent.com/zee8765/etf-monitor/main/data/csi300_float_cap_observed.csv'
+            r = requests.get(url, timeout=10)
+            if r.status_code == 404:
+                st.info('正在尝试获取沪深300历史成分股自由流通市值；公开接口暂未提供完整300只成分股的可核验日期。')
+                return
+            r.raise_for_status()
+            cap = pd.read_csv(StringIO(r.text))
+        required = {'date', 'constituent_count', 'csi300_float_cap_yi'}
+        if not required.issubset(cap.columns):
+            st.warning('流通市值文件格式不完整。')
+            return
+        cap['date'] = pd.to_datetime(cap['date'], errors='coerce')
+        cap = cap.dropna(subset=['date']).sort_values('date')
+        cap = cap[cap['constituent_count'].eq(300) & cap['csi300_float_cap_yi'].gt(0)]
+        if cap.empty:
+            st.info('尚无覆盖全部300只成分股的有效流通市值日期。')
+            return
+        st.caption(f"已采集 {len(cap)} 个300成分股齐全的历史观测日期，最新 {cap['date'].iloc[-1]:%Y-%m-%d}。仍需核验指数自由流通口径及ETF覆盖率后才能发布正式占比。")
+        st.dataframe(cap.tail(10).sort_values('date', ascending=False), hide_index=True, use_container_width=True)
+    except Exception as exc:
+        st.info(f'流通市值数据暂不可用：{exc}')
+
 ratio_panel()
 all_etf_panel()
+denominator_status()
 st.divider()
 
 @st.cache_data(ttl=300, show_spinner=False)
