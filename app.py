@@ -80,10 +80,10 @@ def components_panel():
         else:
             idx = x[['date', 'csi300_close']].copy()
 
-        st.caption('蓝线：沪深300指数（点）｜橙线：四只ETF合计市值（亿元）。橙线不是市值占比；缺少经核实的历史流通市值分母。')
+        st.caption('蓝线：沪深300指数真实历史。四只ETF市值仅有近期数据，单独显示，不把短期数据伪装成2024年以来的历史占比。')
         choices = ['2024年至今', '2026年', '近1年', '近6个月', '近3个月']
         choice = st.radio('时间范围', choices, horizontal=True, key='components_period', index=0)
-        last = max(idx['date'].max(), x['date'].max())
+        last = idx['date'].max()
         starts = {
             '2024年至今': pd.Timestamp('2024-01-01'),
             '2026年': pd.Timestamp('2026-01-01'),
@@ -93,52 +93,52 @@ def components_panel():
         }
         cutoff = starts[choice]
         view_idx = idx[idx['date'] >= cutoff]
-        view_cap = x[x['date'] >= cutoff].copy()
-        view_cap['change_pct'] = view_cap['etf_market_cap_yi'].pct_change() * 100
-        view_cap['plot_cap'] = view_cap['etf_market_cap_yi'].where(
-            view_cap['change_pct'].abs().le(10) | view_cap['change_pct'].isna())
-        flagged = view_cap[view_cap['change_pct'].abs().gt(10)]
-        fig = make_subplots(specs=[[{'secondary_y': True}]])
+        fig = go.Figure()
         fig.add_trace(go.Scatter(
             x=view_idx['date'], y=view_idx['csi300_close'],
             name='沪深300指数（点）', mode='lines',
             line={'color':'#7bbcf4','width':2.2},
-            hovertemplate='%{x|%Y-%m-%d}<br>沪深300：%{y:,.2f}点<extra></extra>'),
-            secondary_y=False)
-        fig.add_trace(go.Scatter(
-            x=view_cap['date'], y=view_cap['plot_cap'],
-            name='四只ETF合计市值（亿元）', mode='lines+markers',
-            line={'color':'#ffad48','width':2.5},
-            marker={'size':4}, connectgaps=False,
-            hovertemplate='%{x|%Y-%m-%d}<br>ETF市值：%{y:,.2f}亿元<extra></extra>'),
-            secondary_y=True)
-        if not flagged.empty:
-            fig.add_trace(go.Scatter(
-                x=flagged['date'], y=flagged['etf_market_cap_yi'],
-                name='异常变化待核验', mode='markers',
-                marker={'color':'#f87171','size':10,'symbol':'x'},
-                customdata=flagged[['change_pct']].to_numpy(),
-                hovertemplate='%{x|%Y-%m-%d}<br>市值：%{y:,.2f}亿元<br>变化：%{customdata[0]:+.1f}%（待核验）<extra></extra>'),
-                secondary_y=True)
-        fig.update_yaxes(title_text='沪深300（点）', secondary_y=False)
-        fig.update_yaxes(title_text='ETF市值（亿元）', secondary_y=True)
-        # Show the selected period only if the index history is actually available.
-        if not view_idx.empty:
-            xstart = max(cutoff, idx['date'].min())
-        else:
-            xstart = x['date'].min()
+            hovertemplate='%{x|%Y-%m-%d}<br>沪深300：%{y:,.2f}点<extra></extra>'))
+        fig.update_yaxes(title_text='沪深300指数（点）', automargin=True)
         fig.update_xaxes(
-            range=[xstart, last + pd.Timedelta(days=2)],
-            rangeslider={'visible':True, 'thickness':0.10},
+            range=[max(cutoff, idx['date'].min()), last + pd.Timedelta(days=2)],
+            rangeslider={'visible':True, 'thickness':0.11},
             tickformat='%Y-%m')
         fig.update_layout(
-            height=530, margin={'l':8,'r':8,'t':20,'b':100},
+            height=460, margin={'l':8,'r':8,'t':12,'b':65},
             hovermode='x unified', dragmode='pan',
-            legend={'orientation':'h','y':-0.32,'x':0},
-            modebar={'orientation':'v'})
+            showlegend=False)
         st.plotly_chart(fig, use_container_width=True,
                         config={'scrollZoom':True, 'displaylogo':False,
-                                'modeBarButtonsToRemove':['toImage','lasso2d','select2d']})
+                                'displayModeBar':False})
+        st.caption(f"指数覆盖：{idx['date'].min():%Y-%m-%d} 至 {idx['date'].max():%Y-%m-%d}；{len(idx)}个有效交易日。")
+        st.subheader('四只ETF合计市值：近期可核验区间')
+        st.caption('此图只使用四只ETF同日份额及收盘价，不代表全市场ETF市值占比，也不补造历史数据。')
+        view_cap = x.copy()
+        view_cap['change_pct'] = view_cap['etf_market_cap_yi'].pct_change() * 100
+        flagged = view_cap[view_cap['change_pct'].abs().gt(10)].copy()
+        # Suspect observations are shown separately rather than connected into a misleading spike.
+        clean_cap = view_cap[view_cap['change_pct'].abs().le(10) | view_cap['change_pct'].isna()].copy()
+        fig2 = go.Figure()
+        fig2.add_trace(go.Scatter(
+            x=clean_cap['date'], y=clean_cap['etf_market_cap_yi'],
+            mode='lines+markers', name='四只ETF合计市值（亿元）',
+            line={'color':'#ffad48','width':2.5}, marker={'size':5},
+            hovertemplate='%{x|%Y-%m-%d}<br>市值：%{y:,.2f}亿元<extra></extra>'))
+        if not flagged.empty:
+            fig2.add_trace(go.Scatter(
+                x=flagged['date'], y=flagged['etf_market_cap_yi'],
+                mode='markers', name='变化超过10%：待核验',
+                marker={'color':'#f87171','size':10,'symbol':'x'},
+                hovertemplate='%{x|%Y-%m-%d}<br>待核验市值：%{y:,.2f}亿元<extra></extra>'))
+        fig2.update_layout(
+            height=320, margin={'l':8,'r':8,'t':12,'b':45},
+            hovermode='x unified', dragmode='pan',
+            legend={'orientation':'h','y':-0.22,'x':0})
+        fig2.update_yaxes(title_text='ETF市值（亿元）', automargin=True)
+        fig2.update_xaxes(tickformat='%m-%d')
+        st.plotly_chart(fig2, use_container_width=True,
+                        config={'scrollZoom':True, 'displaylogo':False, 'displayModeBar':False})
         if idx['date'].min() > pd.Timestamp('2024-01-31'):
             st.warning(f"沪深300完整历史尚未生成，当前指数最早为 {idx['date'].min():%Y-%m-%d}。请运行一次新的市值采集任务。")
         if not flagged.empty:
