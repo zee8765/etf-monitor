@@ -11,46 +11,66 @@ CODES = ('510300', '510330', '510310', '159919')
 START = '20261001'  # Existing shares.csv begins in October 2026.
 
 
+def _clean_history(df, value_column, output_column, code):
+    if df is None or df.empty:
+        raise ValueError(f'{code}: empty historical data')
+    date_col = next((c for c in ('date', '日期') if c in df.columns), None)
+    close_col = next((c for c in ('close', '收盘') if c in df.columns), None)
+    if not date_col or not close_col:
+        raise ValueError(f'{code}: unexpected columns {list(df.columns)}')
+    out = df[[date_col, close_col]].rename(
+        columns={date_col: 'date', close_col: output_column}
+    ).copy()
+    out['date'] = pd.to_datetime(out['date'], errors='coerce').dt.normalize()
+    out[output_column] = pd.to_numeric(out[output_column], errors='coerce')
+    out = out.dropna()
+    out = out[out[output_column] > 0].drop_duplicates('date', keep='last')
+    start = pd.to_datetime(START, format='%Y%m%d')
+    finish = pd.to_datetime(end, format='%Y%m%d')
+    out = out[out['date'].between(start, finish)]
+    if out.empty:
+        raise ValueError(f'{code}: no valid prices within date range')
+    return out
+
+
 def get_prices(code, end):
-    last_error = None
-    for attempt in range(3):
+    # Sina history does not use Eastmoney's rate-limited push2 endpoint.
+    symbol = ('sh' if code.startswith('5') else 'sz') + code
+    errors = []
+    for provider, loader in (
+        ('Sina', lambda: ak.fund_etf_hist_sina(symbol=symbol)),
+        ('Eastmoney fallback', lambda: ak.fund_etf_hist_em(
+            symbol=code, period='daily', start_date=START,
+            end_date=end, adjust='')),
+    ):
         try:
-            df = ak.fund_etf_hist_em(symbol=code, period='daily', start_date=START,
-                                     end_date=end, adjust='')
-            if df is None or df.empty or not {'日期', '收盘'}.issubset(df.columns):
-                raise ValueError(f'{code}: empty/unexpected ETF price data')
-            out = df[['日期', '收盘']].rename(columns={'日期': 'date', '收盘': 'close'}).copy()
-            out['date'] = pd.to_datetime(out['date'], errors='coerce').dt.normalize()
-            out['close'] = pd.to_numeric(out['close'], errors='coerce')
-            out = out.dropna().query('close > 0').drop_duplicates('date', keep='last')
-            if out.empty:
-                raise ValueError(f'{code}: no valid prices')
+            out = _clean_history(loader(), 'close', 'close', code)
+            print(f'INFO {code} ETF prices: {provider}, {len(out)} rows', flush=True)
             return out
-        except Exception as e:
-            last_error = e
-            time.sleep(2 ** attempt)
-    raise RuntimeError(f'ETF {code} price request failed: {last_error}')
+        except Exception as exc:
+            errors.append(f'{provider}: {type(exc).__name__}: {exc}')
+            print(f'WARNING {code} {errors[-1]}', flush=True)
+            time.sleep(2)
+    raise RuntimeError(f'ETF {code} price providers failed: ' + ' | '.join(errors))
 
 
 def get_index(end):
-    last_error = None
-    for attempt in range(3):
+    errors = []
+    for provider, loader in (
+        ('Sina', lambda: ak.stock_zh_index_daily(symbol='sh000300')),
+        ('Eastmoney fallback', lambda: ak.index_zh_a_hist_em(
+            symbol='000300', period='daily', start_date=START,
+            end_date=end)),
+    ):
         try:
-            df = ak.index_zh_a_hist_em(symbol='000300', period='daily',
-                                    start_date=START, end_date=end)
-            if df is None or df.empty or not {'日期', '收盘'}.issubset(df.columns):
-                raise ValueError('CSI300 index empty/unexpected')
-            out = df[['日期', '收盘']].rename(columns={'日期': 'date', '收盘': 'csi300_close'}).copy()
-            out['date'] = pd.to_datetime(out['date'], errors='coerce').dt.normalize()
-            out['csi300_close'] = pd.to_numeric(out['csi300_close'], errors='coerce')
-            out = out.dropna().query('csi300_close > 0').drop_duplicates('date', keep='last')
-            if out.empty:
-                raise ValueError('No valid index closes')
+            out = _clean_history(loader(), 'close', 'csi300_close', 'CSI300')
+            print(f'INFO CSI300 index: {provider}, {len(out)} rows', flush=True)
             return out
-        except Exception as e:
-            last_error = e
-            time.sleep(2 ** attempt)
-    raise RuntimeError(f'CSI300 index request failed: {last_error}')
+        except Exception as exc:
+            errors.append(f'{provider}: {type(exc).__name__}: {exc}')
+            print(f'WARNING CSI300 {errors[-1]}', flush=True)
+            time.sleep(2)
+    raise RuntimeError('CSI300 index providers failed: ' + ' | '.join(errors))
 
 
 def main():
