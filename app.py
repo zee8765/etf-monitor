@@ -39,49 +39,99 @@ def components_remote_csv():
     r.raise_for_status()
     return pd.read_csv(StringIO(r.text))
 
+INDEX_LOCAL = Path(__file__).resolve().parent / 'data' / 'csi300_index_history.csv'
+INDEX_REMOTE = 'https://raw.githubusercontent.com/zee8765/etf-monitor/main/data/csi300_index_history.csv'
+
+@st.cache_data(ttl=300, show_spinner=False)
+def index_history_remote():
+    import requests
+    r = requests.get(INDEX_REMOTE, timeout=12, headers={'Cache-Control': 'no-cache'})
+    if r.status_code == 404:
+        return None
+    r.raise_for_status()
+    return pd.read_csv(StringIO(r.text))
+
 def components_panel():
-    if COMPONENTS_LOCAL.exists():
-        raw = pd.read_csv(COMPONENTS_LOCAL)
-    else:
-        raw = components_remote_csv()
-    if raw is None:
-        st.warning('市值和指数采集文件尚未生成。')
-        return
-    required = {'date', 'etf_market_cap_yi', 'csi300_close'}
-    if not required.issubset(raw.columns):
-        st.warning('ETF市值和指数文件缺少必要字段。')
-        return
-    x = raw[['date', 'etf_market_cap_yi', 'csi300_close']].copy()
-    x['date'] = pd.to_datetime(x['date'], errors='coerce')
-    for c in ('etf_market_cap_yi', 'csi300_close'):
-        x[c] = pd.to_numeric(x[c], errors='coerce')
-    x = x.dropna().sort_values('date').drop_duplicates('date', keep='last')
-    x = x[(x['etf_market_cap_yi'] > 0) & (x['csi300_close'] > 0) & (x['date'] <= TODAY)]
-    if x.empty:
-        st.warning('ETF市值和指数数据没有有效的共同日期。')
-        return
-    st.info('已自动显示真实的四只ETF合计市值与沪深300指数。由于尚无经过核实的沪深300成分股流通市值数据，橙线暂为ETF市值（亿元），不是市值占比。')
-    fig = make_subplots(specs=[[{'secondary_y': True}]])
-    fig.add_trace(go.Scatter(x=x['date'], y=x['csi300_close'], name='沪深300指数（点）',
-                             mode='lines+markers', line={'color':'#42a5f5','width':2.4}), secondary_y=False)
-    fig.add_trace(go.Scatter(x=x['date'], y=x['etf_market_cap_yi'], name='四只ETF合计市值（亿元）',
-                             mode='lines+markers', line={'color':'#ff9f43','width':2.4}), secondary_y=True)
-    fig.update_yaxes(title_text='沪深300指数（点）', secondary_y=False)
-    fig.update_yaxes(title_text='四只ETF合计市值（亿元）', secondary_y=True)
-    fig.update_xaxes(
-        rangeslider={'visible': True, 'thickness': 0.09},
-        tickformat='%Y-%m',
-        range=[x['date'].min() - pd.Timedelta(days=1),
-               x['date'].max() + pd.Timedelta(days=1)],
-        rangeselector={'buttons': [
-            {'count': 3, 'label': '3个月', 'step': 'month', 'stepmode': 'backward'},
-            {'count': 6, 'label': '6个月', 'step': 'month', 'stepmode': 'backward'},
-            {'count': 1, 'label': '1年', 'step': 'year', 'stepmode': 'backward'},
-            {'step': 'all', 'label': '全部'}]})
-    fig.update_layout(height=460, margin={'l':5,'r':5,'t':15,'b':85},
-                      hovermode='x unified', legend={'orientation':'h','y':-0.30,'x':0})
-    st.plotly_chart(fig, use_container_width=True)
-    st.caption(f"默认完整显示已有真实数据；支持近3个月、6个月、1年和全部切换；当前仅有 {len(x)} 个共同日期（{x['date'].min():%Y-%m-%d} 至 {x['date'].max():%Y-%m-%d}），历史缺口不会虚构补齐。市值为ETF份额×市场收盘价的参考估算，并非基金披露净资产。")
+    try:
+        raw = pd.read_csv(COMPONENTS_LOCAL) if COMPONENTS_LOCAL.exists() else components_remote_csv()
+        if raw is None:
+            st.warning('ETF市值采集文件尚未生成。')
+            return
+        required = {'date', 'etf_market_cap_yi', 'csi300_close'}
+        if not required.issubset(raw.columns):
+            st.warning('ETF市值文件缺少必要字段。')
+            return
+        x = raw[['date', 'etf_market_cap_yi', 'csi300_close']].copy()
+        x['date'] = pd.to_datetime(x['date'], errors='coerce').dt.normalize()
+        for c in ('etf_market_cap_yi', 'csi300_close'):
+            x[c] = pd.to_numeric(x[c], errors='coerce')
+        x = x.dropna().drop_duplicates('date', keep='last').sort_values('date')
+        x = x[(x['etf_market_cap_yi'] > 0) & (x['csi300_close'] > 0) & (x['date'] <= TODAY)]
+        if x.empty:
+            st.warning('ETF市值没有有效数据。')
+            return
+        idx_raw = pd.read_csv(INDEX_LOCAL) if INDEX_LOCAL.exists() else index_history_remote()
+        if idx_raw is not None and {'date', 'csi300_close'}.issubset(idx_raw.columns):
+            idx = idx_raw[['date', 'csi300_close']].copy()
+            idx['date'] = pd.to_datetime(idx['date'], errors='coerce').dt.normalize()
+            idx['csi300_close'] = pd.to_numeric(idx['csi300_close'], errors='coerce')
+            idx = idx.dropna().drop_duplicates('date', keep='last').sort_values('date')
+            idx = idx[(idx['date'] <= TODAY) & (idx['csi300_close'] > 0)]
+        else:
+            idx = x[['date', 'csi300_close']].copy()
+
+        st.caption('蓝线：沪深300指数（点）｜橙线：四只ETF合计市值（亿元）。橙线不是市值占比；缺少经核实的历史流通市值分母。')
+        choices = ['2024年至今', '2026年', '近1年', '近6个月', '近3个月']
+        choice = st.radio('时间范围', choices, horizontal=True, key='components_period', index=0)
+        last = max(idx['date'].max(), x['date'].max())
+        starts = {
+            '2024年至今': pd.Timestamp('2024-01-01'),
+            '2026年': pd.Timestamp('2026-01-01'),
+            '近1年': last - pd.DateOffset(years=1),
+            '近6个月': last - pd.DateOffset(months=6),
+            '近3个月': last - pd.DateOffset(months=3),
+        }
+        cutoff = starts[choice]
+        view_idx = idx[idx['date'] >= cutoff]
+        view_cap = x[x['date'] >= cutoff]
+        fig = make_subplots(specs=[[{'secondary_y': True}]])
+        fig.add_trace(go.Scatter(
+            x=view_idx['date'], y=view_idx['csi300_close'],
+            name='沪深300指数（点）', mode='lines',
+            line={'color':'#7bbcf4','width':2.2},
+            hovertemplate='%{x|%Y-%m-%d}<br>沪深300：%{y:,.2f}点<extra></extra>'),
+            secondary_y=False)
+        fig.add_trace(go.Scatter(
+            x=view_cap['date'], y=view_cap['etf_market_cap_yi'],
+            name='四只ETF合计市值（亿元）', mode='lines+markers',
+            line={'color':'#ffad48','width':2.5},
+            marker={'size':4},
+            hovertemplate='%{x|%Y-%m-%d}<br>ETF市值：%{y:,.2f}亿元<extra></extra>'),
+            secondary_y=True)
+        fig.update_yaxes(title_text='沪深300（点）', secondary_y=False)
+        fig.update_yaxes(title_text='ETF市值（亿元）', secondary_y=True)
+        # Show the selected period only if the index history is actually available.
+        if not view_idx.empty:
+            xstart = max(cutoff, idx['date'].min())
+        else:
+            xstart = x['date'].min()
+        fig.update_xaxes(
+            range=[xstart, last + pd.Timedelta(days=2)],
+            rangeslider={'visible':True, 'thickness':0.10},
+            tickformat='%Y-%m')
+        fig.update_layout(
+            height=530, margin={'l':8,'r':8,'t':20,'b':100},
+            hovermode='x unified', dragmode='pan',
+            legend={'orientation':'h','y':-0.32,'x':0},
+            modebar={'orientation':'v'})
+        st.plotly_chart(fig, use_container_width=True,
+                        config={'scrollZoom':True, 'displaylogo':False,
+                                'modeBarButtonsToRemove':['toImage','lasso2d','select2d']})
+        if idx['date'].min() > pd.Timestamp('2024-01-31'):
+            st.warning(f"沪深300完整历史尚未生成，当前指数最早为 {idx['date'].min():%Y-%m-%d}。请运行一次新的市值采集任务。")
+        st.caption(f"指数：{len(idx)}个有效日期；ETF合计市值：{len(x)}个有效日期（{x['date'].min():%Y-%m-%d}—{x['date'].max():%Y-%m-%d}）。没有ETF份额的日期不补造橙线。")
+    except Exception as exc:
+        st.warning(f'市值与指数图读取失败：{exc}')
 
 
 @st.cache_data(ttl=300, show_spinner=False)
