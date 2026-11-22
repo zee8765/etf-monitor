@@ -57,8 +57,8 @@ def get_prices(code, end):
 def get_index(end):
     errors = []
     for provider, loader in (
-        ('Sina', lambda: ak.stock_zh_index_daily(symbol='sh000300')),
-        ('Eastmoney fallback', lambda: ak.index_zh_a_hist_em(
+        ('Sina', lambda: ak.index_zh_daily_sina(symbol='sh000300')),
+        ('Eastmoney fallback', lambda: ak.index_zh_hist_em(
             symbol='000300', period='daily', start_date=START,
             end_date=end)),
     ):
