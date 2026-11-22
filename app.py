@@ -71,8 +71,8 @@ def components_panel():
     fig.update_xaxes(
         rangeslider={'visible': True, 'thickness': 0.09},
         tickformat='%Y-%m',
-        range=[max(x['date'].max() - pd.Timedelta(days=365), pd.Timestamp('2025-01-01')),
-               x['date'].max() + pd.Timedelta(days=2)],
+        range=[x['date'].min() - pd.Timedelta(days=1),
+               x['date'].max() + pd.Timedelta(days=1)],
         rangeselector={'buttons': [
             {'count': 3, 'label': '3个月', 'step': 'month', 'stepmode': 'backward'},
             {'count': 6, 'label': '6个月', 'step': 'month', 'stepmode': 'backward'},
@@ -81,7 +81,7 @@ def components_panel():
     fig.update_layout(height=460, margin={'l':5,'r':5,'t':15,'b':85},
                       hovermode='x unified', legend={'orientation':'h','y':-0.30,'x':0})
     st.plotly_chart(fig, use_container_width=True)
-    st.caption(f"默认显示最近一年；当前仅有 {len(x)} 个共同日期（{x['date'].min():%Y-%m-%d} 至 {x['date'].max():%Y-%m-%d}），历史缺口不会虚构补齐。市值为ETF份额×市场收盘价的参考估算，并非基金披露净资产。")
+    st.caption(f"默认完整显示已有真实数据；支持近3个月、6个月、1年和全部切换；当前仅有 {len(x)} 个共同日期（{x['date'].min():%Y-%m-%d} 至 {x['date'].max():%Y-%m-%d}），历史缺口不会虚构补齐。市值为ETF份额×市场收盘价的参考估算，并非基金披露净资产。")
 
 
 @st.cache_data(ttl=300, show_spinner=False)
