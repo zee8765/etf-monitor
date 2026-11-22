@@ -232,7 +232,52 @@ def ratio_panel():
     except Exception as e:
         st.warning(f'市值图暂无法显示：{e}。原有ETF份额监测仍可使用。')
 
+@st.cache_data(ttl=300, show_spinner=False)
+def all_etf_remote_csv():
+    import requests
+    url = 'https://raw.githubusercontent.com/zee8765/etf-monitor/main/data/all_csi300_etf_market.csv'
+    r = requests.get(url, timeout=12)
+    if r.status_code == 404:
+        return None
+    r.raise_for_status()
+    return pd.read_csv(StringIO(r.text), dtype={'code':str})
+
+def all_etf_panel():
+    st.subheader('全市场沪深300ETF候选基金市值采集进度')
+    path = Path(__file__).resolve().parent / 'data' / 'all_csi300_etf_market.csv'
+    try:
+        raw = pd.read_csv(path, dtype={'code':str}) if path.exists() else all_etf_remote_csv()
+        if raw is None:
+            st.info('自动采集程序已配置，等待首次运行生成候选ETF市值文件。')
+            return
+        needed = {'date','code','name','market_cap_yi'}
+        if not needed.issubset(raw.columns):
+            st.warning('候选ETF文件格式不完整。')
+            return
+        x = raw.copy()
+        x['date'] = pd.to_datetime(x['date'], errors='coerce')
+        x['market_cap_yi'] = pd.to_numeric(x['market_cap_yi'], errors='coerce')
+        x = x.dropna(subset=['date','market_cap_yi'])
+        x = x[x['market_cap_yi'] > 0]
+        if x.empty:
+            st.warning('尚无有效候选ETF市值。')
+            return
+        daily = x.groupby('date').agg(
+            候选ETF市值合计_亿元=('market_cap_yi','sum'),
+            当日基金数量=('code','nunique')).reset_index()
+        st.metric('最新候选ETF数量', int(daily.iloc[-1]['当日基金数量']))
+        st.metric('最新候选ETF市值合计（亿元）',
+                  f"{daily.iloc[-1]['候选ETF市值合计_亿元']:,.2f}")
+        st.caption('此处按基金名称筛选沪深300ETF候选名单，尚未逐只核实跟踪标的和历史覆盖率；不同日期基金数量可能变化。不能把候选市值直接当作全市场完整市值。')
+        st.dataframe(daily.tail(30).sort_values('date', ascending=False),
+                     hide_index=True, use_container_width=True)
+        st.download_button('下载候选ETF明细', x.to_csv(index=False).encode('utf-8-sig'),
+                           file_name='all_csi300_etf_candidates.csv', mime='text/csv')
+    except Exception as exc:
+        st.warning(f'候选ETF数据尚不可用：{exc}')
+
 ratio_panel()
+all_etf_panel()
 st.divider()
 
 @st.cache_data(ttl=300, show_spinner=False)
