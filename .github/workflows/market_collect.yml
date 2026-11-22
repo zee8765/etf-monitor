@@ -24,11 +24,14 @@ jobs:
         run: pip install -r requirements.txt
       - name: 采集ETF市值与沪深300指数
         run: python market_collector.py
+      - name: 采集全部沪深300ETF候选基金市值
+        run: python all_etf_collector.py
       - name: 保存采集结果
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add data/etf_market_components.csv data/csi300_index_history.csv
+          if [ -f data/all_csi300_etf_market.csv ]; then git add data/all_csi300_etf_market.csv; fi
           if [ -f data/etf_market_ratio.csv ]; then git add data/etf_market_ratio.csv; fi
           if ! git diff --cached --quiet; then
             git commit -m "自动更新ETF市值和沪深300指数"
