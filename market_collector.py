@@ -8,7 +8,7 @@ import akshare as ak
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / 'data'
 CODES = ('510300', '510330', '510310', '159919')
-START = '20261001'  # Existing shares.csv begins in October 2026.
+START = '20240101'  # Collect full CSI300 history; ETF market value still requires observed shares.
 
 
 def _clean_history(df, value_column, output_column, code, end):
@@ -102,6 +102,11 @@ def main():
         raise RuntimeError('No dates with all 4 ETF shares and prices')
     aggregate = wide[list(CODES)].sum(axis=1).rename('etf_market_cap_yi').reset_index()
     index = get_index(end)
+    DATA.mkdir(exist_ok=True)
+    index_export = index.copy()
+    index_export['date'] = index_export['date'].dt.strftime('%Y-%m-%d')
+    index_export.to_csv(DATA / 'csi300_index_history.csv', index=False)
+    print(f'Saved {len(index_export)} CSI300 index history observations')
     partial = aggregate.merge(index, on='date', how='inner', validate='one_to_one')
     if partial.empty:
         raise RuntimeError('No same-date index and ETF market-cap observations')
