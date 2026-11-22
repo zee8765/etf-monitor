@@ -434,6 +434,65 @@ if not complete.empty:
 else:
     st.info('尚无四只ETF同日齐全的记录，暂不计算合计。')
 
+# Observed four-ETF subscription/redemption proxy, never labelled as full-market flows.
+st.subheader('ETF份额增减与沪深300指数联动（四只代表ETF）')
+st.caption('蓝线为沪深300指数；柱状图为510300、510330、510310、159919四只ETF在共同披露日的合计份额变化。绿色增加、红色减少；不是全市场ETF，也不等于实际资金净流入金额。')
+if complete.empty or len(complete) < 2:
+    st.info('至少需要两个四只ETF均有披露的日期，才能计算份额增减。')
+else:
+    try:
+        index_raw = pd.read_csv(INDEX_LOCAL) if INDEX_LOCAL.exists() else index_history_remote()
+        if index_raw is None or not {'date','csi300_close'}.issubset(index_raw.columns):
+            st.info('指数历史数据不可用，暂无法展示份额与指数联动。')
+        else:
+            index_join = index_raw[['date','csi300_close']].copy()
+            index_join['date'] = pd.to_datetime(index_join['date'], errors='coerce').dt.normalize()
+            index_join['csi300_close'] = pd.to_numeric(index_join['csi300_close'], errors='coerce')
+            index_join = index_join.dropna().drop_duplicates('date').sort_values('date')
+            totals = complete[['合计(万份)']].copy().sort_index()
+            totals['上次日期'] = totals.index.to_series().shift(1)
+            totals['份额变化(万份)'] = totals['合计(万份)'].diff()
+            totals['疑似缺失工作日'] = [
+                weekday_missing(a, b) if pd.notna(a) else 0
+                for a, b in zip(totals['上次日期'], totals.index)
+            ]
+            # Do not present changes spanning missing weekdays as daily flows.
+            totals.loc[totals['疑似缺失工作日'].gt(0), '份额变化(万份)'] = float('nan')
+            aligned = totals.reset_index().rename(columns={'date':'date'})
+            aligned = aligned.merge(index_join, on='date', how='inner')
+            aligned = aligned.dropna(subset=['份额变化(万份)','csi300_close']).sort_values('date')
+            if aligned.empty:
+                st.info('暂无与指数同日对齐且未跨工作日缺口的四只ETF份额变化记录。')
+            else:
+                flow_period = st.radio('联动图时间范围', ['全部可用','近30天','近90天'], horizontal=True, key='flow_period')
+                flow_start = {'全部可用':None,'近30天':aligned['date'].max()-pd.Timedelta(days=30),
+                              '近90天':aligned['date'].max()-pd.Timedelta(days=90)}[flow_period]
+                view_flow = aligned if flow_start is None else aligned[aligned['date'] >= flow_start]
+                flow_fig = make_subplots(specs=[[{'secondary_y':True}]])
+                flow_fig.add_trace(go.Scatter(x=view_flow['date'], y=view_flow['csi300_close'],
+                    name='沪深300指数（点）', mode='lines+markers',
+                    line={'color':'#60a5fa','width':2.5},
+                    hovertemplate='%{x|%Y-%m-%d}<br>沪深300：%{y:,.2f}点<extra></extra>'),secondary_y=False)
+                flow_fig.add_trace(go.Bar(x=view_flow['date'], y=view_flow['份额变化(万份)'],
+                    name='四只ETF合计份额增减（万份）',
+                    marker_color=['#16a34a' if v>=0 else '#ef4444' for v in view_flow['份额变化(万份)']],
+                    opacity=.72,
+                    hovertemplate='%{x|%Y-%m-%d}<br>份额变化：%{y:+,.2f}万份<extra></extra>'),secondary_y=True)
+                flow_fig.add_hline(y=0, line_width=0.8, line_color='gray', secondary_y=True)
+                flow_fig.update_yaxes(title_text='沪深300指数（点）',secondary_y=False)
+                flow_fig.update_yaxes(title_text='四只ETF份额变化（万份）',secondary_y=True,showgrid=False)
+                flow_fig.update_layout(height=460,hovermode='x unified',
+                    margin={'l':8,'r':8,'t':15,'b':85},
+                    legend={'orientation':'h','y':-0.28,'x':0})
+                flow_fig.update_xaxes(tickformat='%Y-%m-%d')
+                st.plotly_chart(flow_fig,use_container_width=True)
+                last_flow = aligned.iloc[-1]
+                st.metric('最近有效共同披露日份额增减',f"{last_flow['份额变化(万份)']:+,.2f} 万份",
+                          help=f"日期：{last_flow['date']:%Y-%m-%d}，仅四只ETF")
+                st.caption(f"可用联动观测：{len(aligned)}个日期；缺少工作日披露的跨期变化已排除。份额增加是净申购的参考信号，不能确认买入者身份。")
+    except Exception as flow_exc:
+        st.warning(f'ETF份额与指数联动图暂不可用：{flow_exc}')
+
 st.subheader('份额变化趋势')
 chart = selected[selected['date'] >= max_date - pd.Timedelta(days=period)].copy()
 if not chart.empty:
