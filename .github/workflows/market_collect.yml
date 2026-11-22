@@ -28,7 +28,8 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/etf_market_components.csv data/etf_market_ratio.csv 2>/dev/null || git add data/etf_market_components.csv
+          git add data/etf_market_components.csv data/csi300_index_history.csv
+          if [ -f data/etf_market_ratio.csv ]; then git add data/etf_market_ratio.csv; fi
           if ! git diff --cached --quiet; then
             git commit -m "自动更新ETF市值和沪深300指数"
             git pull --rebase
