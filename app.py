@@ -17,8 +17,8 @@ COLS = {'date', 'code', 'shares_10k', 'source'}
 TODAY = pd.Timestamp.now(tz='Asia/Shanghai').tz_localize(None).normalize()
 
 st.set_page_config(page_title='沪深300 ETF资金观察', layout='wide', initial_sidebar_state='collapsed')
-st.title('沪深300 ETF资金观察 · 市值占比版')
-st.caption('四只沪深300ETF · 交易所披露份额（万份） · 不代表中央汇金交易流水')
+st.title('沪深300 ETF资金观察')
+st.caption('顶部：全部直接跟踪沪深300的场内ETF市值占比（需经核验的数据）｜下方：四只代表ETF份额监测')
 st.markdown('''<style> .block-container{padding-top:1.3rem;padding-bottom:2rem;max-width:1250px} [data-testid="stMetricValue"]{font-size:clamp(1.35rem,4vw,2.3rem)} @media(max-width:700px){h1{font-size:1.65rem!important}h2{font-size:1.25rem!important}h3{font-size:1.1rem!important} .block-container{padding-left:0.8rem;padding-right:0.8rem} [data-testid="stHorizontalBlock"]{gap:.5rem}} </style>''', unsafe_allow_html=True)
 
 # The historical float-adjusted capitalization is not in ETF share observations.
@@ -179,11 +179,11 @@ def clean_ratio(raw):
 
 def ratio_panel():
     st.subheader('沪深300 ETF市值占沪深300流通市值比例')
-    st.caption('蓝线：沪深300指数收盘点位；橙线：四只ETF合计市值 ÷ 沪深300成分股流通市值合计 × 100%')
+    st.caption('蓝线：沪深300指数；橙线：全部直接跟踪沪深300的场内ETF合计市值 ÷ 沪深300成分股流通市值合计 × 100%。不含增强ETF和联接基金。')
     with st.expander('数据来源与导入说明', expanded=False):
-        st.write('需要同日、同口径的真实历史数据。ETF市值可按四只基金各自的份额×对应日期单位净值汇总；分母必须为沪深300成分股流通市值合计，不能用指数点位或成交额代替。')
+        st.write('需要同日、同口径的真实历史数据。分子应覆盖当日所有直接跟踪沪深300的场内ETF（不含增强ETF、联接基金），逐只用份额×对应日期净值计算；分母必须为沪深300成分股流通市值合计，不能用指数点位或成交额代替。')
         st.code('date,etf_market_cap_yi,csi300_float_cap_yi,csi300_close', language='text')
-        st.caption('市值单位均为亿元，指数单位为点；可将CSV提交到仓库 data/etf_market_ratio.csv 自动展示。数据需来自可核实的披露来源。')
+        st.caption('市值单位均为亿元，指数单位为点；可将CSV提交到仓库 data/etf_market_ratio.csv 自动展示。仅接受已核实涵盖全部符合条件ETF的同口径数据。')
     upload = st.file_uploader('可选：上传已核实的市值历史CSV', type='csv', key='ratio_csv')
     try:
         if upload is not None:
@@ -196,6 +196,7 @@ def ratio_panel():
             raw_ratio = ratio_remote_csv()
             label = 'GitHub历史市值CSV'
         if raw_ratio is None:
+            st.warning('尚无可核验的全市场沪深300ETF市值占比历史数据。下图为四只代表ETF的市值参考图（不是占比）。')
             components_panel()
             return
         x = clean_ratio(raw_ratio)
@@ -214,7 +215,7 @@ def ratio_panel():
         fig.add_trace(go.Scatter(x=view['date'], y=view['csi300_close'], name='沪深300指数',
                                  mode='lines', line={'color':'#42a5f5','width':2.4},
                                  hovertemplate='%{x|%Y-%m-%d}<br>指数：%{y:,.2f}点<extra></extra>'), secondary_y=False)
-        fig.add_trace(go.Scatter(x=view['date'], y=view['ratio_pct'], name='四只ETF市值占比',
+        fig.add_trace(go.Scatter(x=view['date'], y=view['ratio_pct'], name='全部沪深300ETF市值占比',
                                  mode='lines', line={'color':'#ff9f43','width':2.4},
                                  hovertemplate='%{x|%Y-%m-%d}<br>占比：%{y:.3f}%<extra></extra>'), secondary_y=True)
         fig.update_yaxes(title_text='指数（点）', secondary_y=False)
@@ -225,7 +226,7 @@ def ratio_panel():
                           hovermode='x unified', dragmode='pan',
                           legend={'orientation':'h','y':-0.30,'x':0})
         st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True, 'displaylogo': False})
-        st.caption(f"数据：{label}｜最后日期：{latest['date']:%Y-%m-%d}｜{len(x)}个观测日。该占比只涵盖指定的四只ETF，并非全部沪深300ETF。")
+        st.caption(f"数据：{label}｜最后日期：{latest['date']:%Y-%m-%d}｜{len(x)}个观测日。该占比要求覆盖当日全部直接跟踪沪深300的场内ETF，排除增强ETF和联接基金；请核验CSV来源和覆盖率。")
         st.download_button('下载市值占比计算结果', x.to_csv(index=False).encode('utf-8-sig'),
                            'etf_market_ratio_checked.csv', 'text/csv')
     except Exception as e:
