@@ -85,8 +85,34 @@ def components_panel():
             line={'color': '#7bbcf4', 'width': 2.3},
             hovertemplate='%{x|%Y-%m-%d}<br>沪深300：%{y:,.2f}点<extra></extra>'
         ), secondary_y=False)
-        # Orange is deliberately absent until the verified all-ETF ratio exists.
-        # Both series will occupy this same subplot, with independent left/right scales.
+        # The orange line uses ONLY audited whole-market numerator/denominator observations.
+        # Never use the four monitored ETF market values as a substitute.
+        ratio_raw = None
+        ratio_source = None
+        try:
+            if RATIO_LOCAL.exists():
+                ratio_raw = pd.read_csv(RATIO_LOCAL)
+                ratio_source = '仓库已核验占比数据'
+            else:
+                ratio_raw = ratio_remote_csv()
+                ratio_source = 'GitHub已核验占比数据'
+        except Exception as ratio_error:
+            st.warning(f'占比数据暂不可读取：{ratio_error}')
+        if ratio_raw is not None:
+            try:
+                ratio = clean_ratio(ratio_raw)
+                ratio = ratio[(ratio['date'] >= cutoff) & (ratio['date'] <= last)]
+                if not ratio.empty:
+                    fig.add_trace(go.Scatter(
+                        x=ratio['date'], y=ratio['ratio_pct'],
+                        name='全部沪深300ETF市值占比（%）', mode='lines+markers',
+                        line={'color':'#ff9f43','width':2.5},
+                        marker={'size':4},
+                        hovertemplate='%{x|%Y-%m-%d}<br>占比：%{y:.3f}%<extra></extra>'
+                    ), secondary_y=True)
+                    st.caption(f'橙线来源：{ratio_source}；{len(ratio)}个有效观测日。')
+            except Exception as ratio_error:
+                st.warning(f'占比数据未通过校验：{ratio_error}')
         fig.update_yaxes(title_text='沪深300指数（点）', secondary_y=False,
                          automargin=True)
         fig.update_yaxes(title_text='全部沪深300ETF市值占比（%）', secondary_y=True,
@@ -102,7 +128,7 @@ def components_panel():
         st.plotly_chart(fig, use_container_width=True,
                         config={'scrollZoom':True, 'displaylogo':False,
                                 'displayModeBar':False})
-        st.caption(f"指数覆盖：{idx['date'].min():%Y-%m-%d} 至 {last:%Y-%m-%d}，共{len(idx)}个有效交易日。橙线将在真实全市场占比数据齐备后叠加到同一张图的右轴。")
+        st.caption(f"指数覆盖：{idx['date'].min():%Y-%m-%d} 至 {last:%Y-%m-%d}，共{len(idx)}个有效交易日。橙线仅在真实全市场占比数据齐备时叠加到右轴。")
     except Exception as exc:
         st.warning(f'指数图读取失败：{exc}')
 
@@ -262,7 +288,12 @@ def denominator_status():
     except Exception as exc:
         st.info(f'流通市值数据暂不可用：{exc}')
 
-ratio_panel()
+st.subheader('沪深300指数与全部沪深300ETF市值占比（同图双轴）')
+st.caption('蓝线左轴为沪深300指数；橙线右轴为全部直接跟踪沪深300的场内ETF合计市值÷沪深300成分股流通市值合计×100%。两条线共用日期横轴。')
+components_panel()
+with st.expander('占比数据导入说明'):
+    st.code('date,etf_market_cap_yi,csi300_float_cap_yi,csi300_close', language='text')
+    st.caption('经核验的数据保存至 data/etf_market_ratio.csv，自动叠加到上图；不得以四只ETF代替全市场。')
 all_etf_panel()
 denominator_status()
 st.divider()
