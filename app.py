@@ -112,41 +112,9 @@ def components_panel():
                         config={'scrollZoom':True, 'displaylogo':False,
                                 'displayModeBar':False})
         st.caption(f"指数覆盖：{idx['date'].min():%Y-%m-%d} 至 {idx['date'].max():%Y-%m-%d}；{len(idx)}个有效交易日。")
-        st.subheader('四只ETF合计市值：近期可核验区间')
-        st.caption('此图只使用四只ETF同日份额及收盘价，不代表全市场ETF市值占比，也不补造历史数据。')
-        view_cap = x.copy()
-        view_cap['change_pct'] = view_cap['etf_market_cap_yi'].pct_change() * 100
-        flagged = view_cap[view_cap['change_pct'].abs().gt(10)].copy()
-        # Suspect observations are shown separately rather than connected into a misleading spike.
-        clean_cap = view_cap[view_cap['change_pct'].abs().le(10) | view_cap['change_pct'].isna()].copy()
-        fig2 = go.Figure()
-        fig2.add_trace(go.Scatter(
-            x=clean_cap['date'], y=clean_cap['etf_market_cap_yi'],
-            mode='lines+markers', name='四只ETF合计市值（亿元）',
-            line={'color':'#ffad48','width':2.5}, marker={'size':5},
-            hovertemplate='%{x|%Y-%m-%d}<br>市值：%{y:,.2f}亿元<extra></extra>'))
-        if not flagged.empty:
-            fig2.add_trace(go.Scatter(
-                x=flagged['date'], y=flagged['etf_market_cap_yi'],
-                mode='markers', name='变化超过10%：待核验',
-                marker={'color':'#f87171','size':10,'symbol':'x'},
-                hovertemplate='%{x|%Y-%m-%d}<br>待核验市值：%{y:,.2f}亿元<extra></extra>'))
-        fig2.update_layout(
-            height=320, margin={'l':8,'r':8,'t':12,'b':45},
-            hovermode='x unified', dragmode='pan',
-            legend={'orientation':'h','y':-0.22,'x':0})
-        fig2.update_yaxes(title_text='ETF市值（亿元）', automargin=True)
-        fig2.update_xaxes(tickformat='%m-%d')
-        st.plotly_chart(fig2, use_container_width=True,
-                        config={'scrollZoom':True, 'displaylogo':False, 'displayModeBar':False})
         if idx['date'].min() > pd.Timestamp('2024-01-31'):
             st.warning(f"沪深300完整历史尚未生成，当前指数最早为 {idx['date'].min():%Y-%m-%d}。请运行一次新的市值采集任务。")
-        if not flagged.empty:
-            st.warning(f'发现 {len(flagged)} 个ETF市值变化超过10%的日期：红叉标注、橙线断开，需核对份额及价格。')
-            st.dataframe(flagged[['date','etf_market_cap_yi','change_pct']].rename(
-                columns={'date':'日期','etf_market_cap_yi':'ETF市值(亿元)','change_pct':'相邻变化(%)'}),
-                hide_index=True, use_container_width=True)
-        st.caption(f"指数：{len(idx)}个有效日期；ETF合计市值：{len(x)}个有效日期（{x['date'].min():%Y-%m-%d}—{x['date'].max():%Y-%m-%d}）。没有ETF份额的日期不补造橙线。")
+        st.caption('橙线仅在全部沪深300ETF市值和同日300成分股流通市值均可核验时显示。')
     except Exception as exc:
         st.warning(f'市值与指数图读取失败：{exc}')
 
@@ -196,7 +164,7 @@ def ratio_panel():
             raw_ratio = ratio_remote_csv()
             label = 'GitHub历史市值CSV'
         if raw_ratio is None:
-            st.warning('尚无可核验的全市场沪深300ETF市值占比历史数据。下图为四只代表ETF的市值参考图（不是占比）。')
+            st.info('目前尚无可核验的全市场沪深300ETF市值占比历史数据；同一张双轴图将保留蓝色沪深300指数，橙色占比待真实数据齐备后自动显示。不会使用四只ETF代替全部ETF。')
             components_panel()
             return
         x = clean_ratio(raw_ratio)
