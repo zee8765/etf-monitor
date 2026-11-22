@@ -135,7 +135,7 @@ def main():
     result['ratio_pct'] = result['etf_market_cap_yi'] / result['csi300_float_cap_yi'] * 100
     if (~result['ratio_pct'].between(0, 100, inclusive='neither')).any():
         raise ValueError('Ratio out of range; check market-cap units')
-    result = result[['date', 'etf_market_cap_yi', 'csi300_float_cap_yi', 'csi300_close']]
+    result = result[['date', 'etf_market_cap_yi', 'csi300_float_cap_yi', 'csi300_close', 'ratio_pct']]
     result.to_csv(DATA / 'etf_market_ratio.csv', index=False)
     print(f'Saved {len(result)} fully verified ratio rows')
 
