@@ -115,29 +115,7 @@ def main():
     partial.to_csv(DATA / 'etf_market_components.csv', index=False)
     print(f'Saved {len(partial)} verified-date ETF value/index observations')
 
-    denominator = DATA / 'float_cap_verified.csv'
-    if not denominator.exists():
-        print('NOTICE: data/float_cap_verified.csv missing. Ratio is NOT published.')
-        return
-    cap = pd.read_csv(denominator)
-    if not {'date', 'csi300_float_cap_yi'}.issubset(cap.columns):
-        raise ValueError('float_cap_verified.csv requires date,csi300_float_cap_yi')
-    cap['date'] = pd.to_datetime(cap['date'], errors='coerce').dt.strftime('%Y-%m-%d')
-    cap['csi300_float_cap_yi'] = pd.to_numeric(cap['csi300_float_cap_yi'], errors='coerce')
-    if cap['date'].isna().any() or cap['date'].duplicated().any():
-        raise ValueError('Invalid or duplicated float-cap dates')
-    if cap['csi300_float_cap_yi'].isna().any() or (cap['csi300_float_cap_yi'] <= 0).any():
-        raise ValueError('Invalid float-cap value')
-    result = partial.merge(cap[['date', 'csi300_float_cap_yi']], on='date', how='inner', validate='one_to_one')
-    if result.empty:
-        print('NOTICE: no matching verified denominator dates; ratio not published.')
-        return
-    result['ratio_pct'] = result['etf_market_cap_yi'] / result['csi300_float_cap_yi'] * 100
-    if (~result['ratio_pct'].between(0, 100, inclusive='neither')).any():
-        raise ValueError('Ratio out of range; check market-cap units')
-    result = result[['date', 'etf_market_cap_yi', 'csi300_float_cap_yi', 'csi300_close', 'ratio_pct']]
-    result.to_csv(DATA / 'etf_market_ratio.csv', index=False)
-    print(f'Saved {len(result)} fully verified ratio rows')
+    print('NOTICE: four-ETF components are reference-only. Full-market ratio is calculated separately.')
 
 
 if __name__ == '__main__':
