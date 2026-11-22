@@ -11,15 +11,6 @@ OUT = DATA / "all_csi300_etf_market.csv"
 TZ = dt.timezone(dt.timedelta(hours=8))
 # A name-only screen is a candidate universe, not proof of benchmark tracking.
 # Conservative whitelist: add funds only after verifying their tracking benchmark.
-VERIFIED = {
-    "510300", "510330", "510310", "159919",
-    "510350", "510360", "510380", "510390",
-    "159925", "159927", "159931", "159933",
-    "159919", "159300", "159330", "159310",
-    "563300", "563350", "563520", "563000",
-}
-# Some historical codes may be delisted or not track the plain CSI300.
-# Therefore do NOT infer full-market coverage from this set alone.
 COLUMNS = ["date", "code", "name", "shares_10k", "close", "market_cap_yi", "exchange"]
 
 def normalize(frame, exchange, fallback=None):
@@ -38,7 +29,7 @@ def normalize(frame, exchange, fallback=None):
     d["code"] = d["基金代码"].astype(str).str.split(".").str[0].str.zfill(6)
     d["name"] = d[name_col].astype(str)
     # Direct CSI300 trackers only; exclude enhanced, linked and CSI300 sub-strategies.
-    mask = d["name"].str.contains(r"沪深\\s*300|HS300|CSI\\s*300", case=False, regex=True, na=False)
+    mask = d["name"].str.contains(r"沪深\s*300|HS300|CSI\s*300", case=False, regex=True, na=False)
     mask &= ~d["name"].str.contains(
         r"增强|联接|红利|价值|成长|低波|质量|等权|行业|策略|期权|杠杆|反向|股指",
         regex=True, na=False)
