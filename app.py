@@ -436,7 +436,7 @@ else:
 
 # Observed four-ETF subscription/redemption proxy, never labelled as full-market flows.
 st.subheader('ETF份额增减与沪深300指数联动（四只代表ETF）')
-st.caption('蓝线为沪深300指数；柱状图为510300、510330、510310、159919四只ETF在共同披露日的合计份额变化。绿色增加、红色减少；不是全市场ETF，也不等于实际资金净流入金额。')
+st.caption('蓝线为沪深300指数；柱状图为510300、510330、510310、159919四只ETF在共同披露日的合计份额变化。红色增加、绿色减少；不是全市场ETF，也不等于实际资金净流入金额。')
 if complete.empty or len(complete) < 2:
     st.info('至少需要两个四只ETF均有披露的日期，才能计算份额增减。')
 else:
@@ -475,7 +475,7 @@ else:
                     hovertemplate='%{x|%Y-%m-%d}<br>沪深300：%{y:,.2f}点<extra></extra>'),secondary_y=False)
                 flow_fig.add_trace(go.Bar(x=view_flow['date'], y=view_flow['份额变化(万份)'],
                     name='四只ETF合计份额增减（万份）',
-                    marker_color=['#16a34a' if v>=0 else '#ef4444' for v in view_flow['份额变化(万份)']],
+                    marker_color=['#ef4444' if v>=0 else '#16a34a' for v in view_flow['份额变化(万份)']],
                     opacity=.72,
                     hovertemplate='%{x|%Y-%m-%d}<br>份额变化：%{y:+,.2f}万份<extra></extra>'),secondary_y=True)
                 flow_fig.add_hline(y=0, line_width=0.8, line_color='gray', secondary_y=True)
