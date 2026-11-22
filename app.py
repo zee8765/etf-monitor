@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import streamlit as st
 
 ETFS = {'510300': '华泰柏瑞沪深300ETF', '510330': '华夏沪深300ETF',
@@ -15,9 +17,98 @@ COLS = {'date', 'code', 'shares_10k', 'source'}
 TODAY = pd.Timestamp.now(tz='Asia/Shanghai').tz_localize(None).normalize()
 
 st.set_page_config(page_title='沪深300 ETF资金观察', layout='wide', initial_sidebar_state='collapsed')
-st.title('沪深300 ETF资金观察 · V4')
+st.title('沪深300 ETF资金观察 · 市值占比版')
 st.caption('四只沪深300ETF · 交易所披露份额（万份） · 不代表中央汇金交易流水')
 st.markdown('''<style> .block-container{padding-top:1.3rem;padding-bottom:2rem;max-width:1250px} [data-testid="stMetricValue"]{font-size:clamp(1.35rem,4vw,2.3rem)} @media(max-width:700px){h1{font-size:1.65rem!important}h2{font-size:1.25rem!important}h3{font-size:1.1rem!important} .block-container{padding-left:0.8rem;padding-right:0.8rem} [data-testid="stHorizontalBlock"]{gap:.5rem}} </style>''', unsafe_allow_html=True)
+
+# The historical float-adjusted capitalization is not in ETF share observations.
+# A separate, auditable dataset is required for the numerator and denominator.
+RATIO_LOCAL = Path(__file__).resolve().parent / 'data' / 'etf_market_ratio.csv'
+RATIO_REMOTE = 'https://raw.githubusercontent.com/zee8765/etf-monitor/main/data/etf_market_ratio.csv'
+RATIO_COLS = {'date', 'etf_market_cap_yi', 'csi300_float_cap_yi', 'csi300_close'}
+
+@st.cache_data(ttl=300, show_spinner=False)
+def ratio_remote_csv():
+    import requests
+    r = requests.get(RATIO_REMOTE, timeout=12)
+    if r.status_code == 404:
+        return None
+    r.raise_for_status()
+    return pd.read_csv(StringIO(r.text))
+
+def clean_ratio(raw):
+    if not RATIO_COLS.issubset(raw.columns):
+        raise ValueError('市值CSV需要 date,etf_market_cap_yi,csi300_float_cap_yi,csi300_close 四列')
+    x = raw[list(sorted(RATIO_COLS))].copy()
+    x['date'] = pd.to_datetime(x['date'], errors='coerce').dt.normalize()
+    for c in RATIO_COLS - {'date'}:
+        x[c] = pd.to_numeric(x[c], errors='coerce')
+    x = x.dropna(subset=list(RATIO_COLS))
+    x = x[(x['date'] <= TODAY) & (x['etf_market_cap_yi'] > 0) &
+          (x['csi300_float_cap_yi'] > 0) & (x['csi300_close'] > 0)]
+    if x.duplicated('date').any():
+        raise ValueError('市值CSV存在重复日期，请先核对')
+    x['ratio_pct'] = x['etf_market_cap_yi'] / x['csi300_float_cap_yi'] * 100
+    if (x['ratio_pct'] >= 100).any():
+        raise ValueError('存在占比≥100%的异常值，请核对分子、分母及单位')
+    return x.sort_values('date')
+
+def ratio_panel():
+    st.subheader('沪深300 ETF市值占沪深300流通市值比例')
+    st.caption('蓝线：沪深300指数收盘点位；橙线：四只ETF合计市值 ÷ 沪深300成分股流通市值合计 × 100%')
+    with st.expander('数据来源与导入说明', expanded=False):
+        st.write('需要同日、同口径的真实历史数据。ETF市值可按四只基金各自的份额×对应日期单位净值汇总；分母必须为沪深300成分股流通市值合计，不能用指数点位或成交额代替。')
+        st.code('date,etf_market_cap_yi,csi300_float_cap_yi,csi300_close', language='text')
+        st.caption('市值单位均为亿元，指数单位为点；可将CSV提交到仓库 data/etf_market_ratio.csv 自动展示。数据需来自可核实的披露来源。')
+    upload = st.file_uploader('可选：上传已核实的市值历史CSV', type='csv', key='ratio_csv')
+    try:
+        if upload is not None:
+            raw_ratio = pd.read_csv(upload)
+            label = '本次上传文件（仅当前会话）'
+        elif RATIO_LOCAL.exists():
+            raw_ratio = pd.read_csv(RATIO_LOCAL)
+            label = '仓库本地CSV'
+        else:
+            raw_ratio = ratio_remote_csv()
+            label = 'GitHub历史市值CSV'
+        if raw_ratio is None:
+            st.info('新图表已添加。尚缺真实的ETF合计市值、沪深300流通市值和指数历史数据，因此暂不绘制曲线。原有份额监测功能不受影响。')
+            return
+        x = clean_ratio(raw_ratio)
+        if x.empty:
+            st.warning('市值CSV中没有通过校验的有效记录。')
+            return
+        periods = {'全部': None, '近1年':365, '近6个月':183, '近3个月':92, '近1个月':31}
+        choice = st.radio('市值图时间范围', list(periods), horizontal=True, key='ratio_period')
+        days = periods[choice]
+        view = x if days is None else x[x['date'] >= x['date'].max() - pd.Timedelta(days=days)]
+        latest = x.iloc[-1]
+        a, b = st.columns(2)
+        a.metric('最新市值占比', f"{latest['ratio_pct']:.3f}%")
+        b.metric('沪深300收盘点位', f"{latest['csi300_close']:,.2f}")
+        fig = make_subplots(specs=[[{'secondary_y': True}]])
+        fig.add_trace(go.Scatter(x=view['date'], y=view['csi300_close'], name='沪深300指数',
+                                 mode='lines', line={'color':'#42a5f5','width':2.4},
+                                 hovertemplate='%{x|%Y-%m-%d}<br>指数：%{y:,.2f}点<extra></extra>'), secondary_y=False)
+        fig.add_trace(go.Scatter(x=view['date'], y=view['ratio_pct'], name='四只ETF市值占比',
+                                 mode='lines', line={'color':'#ff9f43','width':2.4},
+                                 hovertemplate='%{x|%Y-%m-%d}<br>占比：%{y:.3f}%<extra></extra>'), secondary_y=True)
+        fig.update_yaxes(title_text='指数（点）', secondary_y=False)
+        fig.update_yaxes(title_text='市值占比（%）', ticksuffix='%', secondary_y=True)
+        fig.update_xaxes(rangeslider={'visible': True, 'thickness':0.09}, tickformat='%Y-%m',
+                         range=[view['date'].min(), view['date'].max() + pd.Timedelta(days=1)])
+        fig.update_layout(height=490, margin={'l':5,'r':5,'t':15,'b':85},
+                          hovermode='x unified', dragmode='pan',
+                          legend={'orientation':'h','y':-0.30,'x':0})
+        st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True, 'displaylogo': False})
+        st.caption(f"数据：{label}｜最后日期：{latest['date']:%Y-%m-%d}｜{len(x)}个观测日。该占比只涵盖指定的四只ETF，并非全部沪深300ETF。")
+        st.download_button('下载市值占比计算结果', x.to_csv(index=False).encode('utf-8-sig'),
+                           'etf_market_ratio_checked.csv', 'text/csv')
+    except Exception as e:
+        st.warning(f'市值图暂无法显示：{e}。原有ETF份额监测仍可使用。')
+
+ratio_panel()
+st.divider()
 
 @st.cache_data(ttl=300, show_spinner=False)
 def remote_csv():
